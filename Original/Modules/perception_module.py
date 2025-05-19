@@ -2,9 +2,11 @@ import queue
 import threading
 import time
 from typing import Dict, List, Tuple, Any, Optional
-from data_structures import (
+from .data_structures import (
     SensorData, PerceptionOutput, DetectedObject, LaneMarking, TrafficSignInfo
 )
+import cv2
+import numpy as np
 
 class DetectionComponent:
     def __init__(self, config: dict):
@@ -12,12 +14,101 @@ class DetectionComponent:
         print("DetectionComponent: Initialized.")
 
     def process(self, sensor_data: SensorData, depth_map: Optional[Any]) -> Tuple[List[DetectedObject], List[LaneMarking], Any, List[TrafficSignInfo]]:
-        # Placeholder for detailed detection logic (Fig 3: Lane, Drivable, Traffic Sign, 3D Detections)
-        print(f"DetectionComponent: Processing sensor data at {sensor_data.timestamp}")
-        detected_objects = [DetectedObject(id=1, type="car", position_3d=(10.0, 2.0, 0.0), bounding_box_2d=(100,100,150,150) ,velocity=(1.0,0.0,0.0), confidence=0.9, tracked_history=[], predicted_trajectory_short_term=[])]
-        lane_markings = [LaneMarking(points=[(0.0, -1.75), (100.0, -1.75)], type="solid_white", confidence=0.95)]
+        # print(f"DetectionComponent: Processing sensor data at {sensor_data.timestamp}")
+        
+        lane_markings = []
+        if sensor_data.vision_data is not None:
+            image = sensor_data.vision_data
+            height, width = image.shape[:2]
+
+            # 1. 그레이스케일 변환
+            gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+            # 2. 가우시안 블러
+            blurred_image = cv2.GaussianBlur(gray_image, (5, 5), 0)
+
+            # 3. 캐니 엣지 검출
+            # TODO: config에서 임계값 가져오기
+            canny_low_threshold = self.config.get("canny_low_threshold", 50)
+            canny_high_threshold = self.config.get("canny_high_threshold", 150)
+            edges_image = cv2.Canny(blurred_image, canny_low_threshold, canny_high_threshold)
+
+            # 4. ROI (Region of Interest) 설정
+            # ROI를 사다리꼴 모양으로 정의 (이미지 하단 중앙 영역)
+            # TODO: config에서 ROI 좌표 가져오기
+            roi_vertices = np.array([
+                [width * 0.1, height],          # 왼쪽 아래
+                [width * 0.4, height * 0.6],    # 왼쪽 위
+                [width * 0.6, height * 0.6],    # 오른쪽 위
+                [width * 0.9, height]           # 오른쪽 아래
+            ], dtype=np.int32)
+            
+            mask = np.zeros_like(edges_image)
+            cv2.fillPoly(mask, [roi_vertices], 255)
+            roi_edges_image = cv2.bitwise_and(edges_image, mask)
+
+            # 5. 허프 변환으로 직선 검출
+            # TODO: config에서 허프 변환 파라미터 가져오기
+            lines = cv2.HoughLinesP(roi_edges_image, rho=1, theta=np.pi/180, threshold=25, minLineLength=20, maxLineGap=50)
+
+            left_lines = []  # (slope, intercept, x1, y1, x2, y2)
+            right_lines = [] # (slope, intercept, x1, y1, x2, y2)
+
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    if x2 - x1 == 0: # 수직선 방지 (기울기 무한대)
+                        slope = np.inf if y2 > y1 else -np.inf
+                    else:
+                        slope = (y2 - y1) / (x2 - x1)
+                    
+                    # 기울기 필터링 (너무 수평이거나 수직인 선 제외)
+                    if abs(slope) < 0.3 or abs(slope) > 2.0: # TODO: config 값 사용
+                        continue
+
+                    intercept = y1 - slope * x1
+                    
+                    # 차선 위치 (이미지 중앙 기준) 및 기울기 부호로 좌우 구분
+                    if slope < 0 and x1 < width / 2 and x2 < width / 2: # 왼쪽 차선 후보 (기울기 음수)
+                        left_lines.append((slope, intercept, x1, y1, x2, y2))
+                    elif slope > 0 and x1 > width / 2 and x2 > width / 2: # 오른쪽 차선 후보 (기울기 양수)
+                        right_lines.append((slope, intercept, x1, y1, x2, y2))
+
+            # 대표 차선 계산 (평균)
+            def average_lines(lines_data, existing_height):
+                if not lines_data:
+                    return None
+                
+                avg_slope = np.mean([ld[0] for ld in lines_data])
+                avg_intercept = np.mean([ld[1] for ld in lines_data])
+                
+                # y 좌표를 기준으로 x 좌표 계산 (ROI 하단과 ROI 상단 중간쯤)
+                y1_new = existing_height # 이미지 하단
+                y2_new = existing_height * 0.7 # 이미지 하단에서 70% 지점
+                
+                if avg_slope == 0: return None # 수평선이면 무시
+
+                x1_new = int((y1_new - avg_intercept) / avg_slope)
+                x2_new = int((y2_new - avg_intercept) / avg_slope)
+                
+                return [(x1_new, int(y1_new)), (x2_new, int(y2_new))]
+
+            left_lane_points = average_lines(left_lines, height)
+            if left_lane_points:
+                lane_markings.append(LaneMarking(points=left_lane_points, type="left_lane", confidence=0.8))
+            
+            right_lane_points = average_lines(right_lines, height)
+            if right_lane_points:
+                lane_markings.append(LaneMarking(points=right_lane_points, type="right_lane", confidence=0.8))
+
+        # 다른 객체들은 더미 데이터 유지
+        detected_objects = [
+            # DetectedObject(id=1, type="car", position_3d=(10.0, 2.0, 0.0), bounding_box_2d=(100,100,150,150) ,velocity=(1.0,0.0,0.0), confidence=0.9, tracked_history=[], predicted_trajectory_short_term=[])
+        ]
         drivable_area_mask = "Sample Drivable Area Mask" # Placeholder
-        traffic_signs = [TrafficSignInfo(type="stop_sign", position_3d=(20.0, 5.0, 1.5), confidence=0.8)]
+        traffic_signs = [
+            # TrafficSignInfo(type="stop_sign", position_3d=(20.0, 5.0, 1.5), confidence=0.8)
+        ]
         return detected_objects, lane_markings, drivable_area_mask, traffic_signs
 
 class SceneUnderstandingComponent:
@@ -113,7 +204,7 @@ class PerceptionModule:
         self._previous_frame_data = {"vision": sensor_data.vision_data, "depth": depth_map}
 
 
-        # Prepare overall perception output
+        # 전체 인지 결과 준비
         perception_result = PerceptionOutput(
             timestamp=sensor_data.timestamp,
             detected_objects=final_objects_with_predictions,

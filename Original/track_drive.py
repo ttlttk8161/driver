@@ -17,9 +17,10 @@ from sensor_msgs.msg import LaserScan
 
 # Modules 시스템 import
 import sys
-from pathlib import Path
-# 현재 파일의 디렉토리의 부모 디렉토리를 sys.path에 추가하여 Modules 폴더를 찾을 수 있도록 함
-sys.path.append(str(Path(__file__).resolve().parent.parent / 'Modules'))
+import os # os 모듈 추가
+# track_drive.py가 있는 디렉토리를 sys.path에 추가하여
+# 바로 아래 Modules 패키지를 찾을 수 있도록 함
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from Modules.main_system import MainSystem, load_dummy_config
 
 #=============================================

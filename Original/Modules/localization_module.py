@@ -1,10 +1,8 @@
 import queue
 import threading
 import time
-from typing import Dict, Optional
-from data_structures import (
-    SensorData, PerceptionOutput, LocalizationInfo, HDMapInterface # Assuming HDMapInterface is defined
-)
+from typing import Optional, Dict, Tuple, List, Any
+from .data_structures import SensorData, PerceptionOutput, LocalizationInfo # HDMapInterface는 이 파일에 정의됨
 
 # Dummy HDMapInterface for now
 class HDMapInterface:

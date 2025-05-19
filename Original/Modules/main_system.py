@@ -4,26 +4,37 @@ import time
 import os # For creating dummy config if needed
 
 # Import module classes
-from data_structures import SensorData # And others if directly used here
-from sensor_input_module import SensorInputManager
-from perception_module import PerceptionModule
-from localization_module import LocalizationModule
-from prediction_module import PredictionModule
-from planning_module import PlanningModule
-from control_module import ControlModule
+from .sensor_input_module import SensorInputManager
+from .perception_module import PerceptionModule
+from .localization_module import LocalizationModule, HDMapInterface # HDMapInterface is defined in localization_module
+from .prediction_module import PredictionModule
+from .planning_module import PlanningModule
+from .control_module import ControlModule
+from .data_structures import SensorData # And others if directly used here
 
 # Dummy config function
 def load_dummy_config() -> dict:
     return {
-        "sensor_input_config": {},
+        "image_width": 640, # 카메라 이미지 너비 (PlanningModule에서 사용)
+        "image_height": 480, # 카메라 이미지 높이
+        "sensor_input_config": {
+            "publish_rate_hz": 20 # 센서 데이터 발행 빈도
+        },
         "perception_config": {
-            "detection": {}, "scene_understanding": {}, "tracking": {}, "perception_prediction": {}
+            "detection": {
+                "canny_low_threshold": 50,
+                "canny_high_threshold": 150,
+                # ROI vertices can be added here if needed by DetectionComponent
+            }, 
+            "scene_understanding": {}, "tracking": {}, "perception_prediction": {}
         },
         "hd_map_path": "path/to/dummy_map.osm", # Example path
         "localization_config": {},
         "prediction_config": {},
         "planning_config": {
-            "path_planner": {}, "decision_maker": {}, "action_planner": {}
+            "path_planner": {}, 
+            "decision_maker": {"target_speed_kph": 10.0}, # 기본 주행 속도
+            "action_planner": {"steering_kp": 0.006, "max_steer_rad": 0.4, "single_lane_steer_rad": 0.1}
         },
         "control_config": {},
         "vehicle_interface_config": { # This will be populated by track_drive.py
@@ -104,19 +115,16 @@ class MainSystem:
             output_queue=self.prediction_to_planning_queue
         )
 
-        # 5. Planning Module
-        planning_input_queues = {
-            "localization": self.localization_to_planning_queue,
-            "prediction": self.prediction_to_planning_queue,
-            "perception": self.perception_to_planning_queue # For static scene context
-        }
+        # Planning Module
+        planning_input_queues = {"localization": self.localization_to_planning_queue, "prediction": self.prediction_to_planning_queue, "perception": self.perception_to_planning_queue}
         self.planning_module = PlanningModule(
-            self.config.get("planning_config", {}),
-            self.config.get("hd_map_path", "dummy_map.hd"),
+            planning_specific_config=self.config.get("planning_config", {}),
+            hd_map_path=self.config.get("hd_map_path", "dummy_map.hd"),
+            overall_system_config=self.config,  # Pass the main system's entire config
             input_queues=planning_input_queues,
             output_queue_control=self.planning_to_control_queue
-        )
-
+         )
+ 
         # 6. Control Module
         # track_drive.py에서 motor 퍼블리셔와 메시지 템플릿을 config 통해 전달받는다고 가정
         vehicle_if_config = self.config.get("vehicle_interface_config", {}).copy() # 복사해서 사용

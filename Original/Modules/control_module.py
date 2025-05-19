@@ -1,7 +1,7 @@
 import queue
 import threading
 import time
-from data_structures import ActionCommand, ControlActuatorCommands
+from .data_structures import ActionCommand, ControlActuatorCommands
 import numpy as np # For np.clip
 import math # For math.degrees
 
@@ -64,13 +64,30 @@ class ControlModule:
             motor_msg_template=vehicle_interface_config.get("ros_motor_msg_template"))
         self._running = False
         self._thread = None
+
+        # 로그 출력을 위한 마지막 값 저장 변수 및 임계값
+        self.last_logged_velocity_mps = None
+        self.last_logged_steering_angle_rad = None
+        self.LOG_VELOCITY_THRESHOLD_MPS = self.config.get("log_velocity_threshold_mps", 0.05)  # m/s
+        self.LOG_ANGLE_THRESHOLD_RAD = self.config.get("log_angle_threshold_rad", 0.005)    # radians (approx 0.28 degrees)
+
         print("ControlModule: Initialized.")
 
     def _translate_action_to_commands(self, action: ActionCommand) -> ControlActuatorCommands:
         # Placeholder for translating ActionCommand (velocity/angle) to low-level actuator commands
         # This would involve PID controllers or other vehicle dynamics models.
-        print(f"ControlModule: Translating action: Vel={action.target_velocity_mps} m/s, Angle={action.target_steering_angle_rad} rad")
+        
+        # 로그 출력 조건 확인
+        should_log = (
+            self.last_logged_velocity_mps is None or
+            abs(action.target_velocity_mps - self.last_logged_velocity_mps) > self.LOG_VELOCITY_THRESHOLD_MPS or
+            abs(action.target_steering_angle_rad - self.last_logged_steering_angle_rad) > self.LOG_ANGLE_THRESHOLD_RAD
+        )
 
+        if should_log:
+            print(f"ControlModule: Translating action: Vel={action.target_velocity_mps} m/s, Angle={action.target_steering_angle_rad} rad")
+            self.last_logged_velocity_mps = action.target_velocity_mps
+            self.last_logged_steering_angle_rad = action.target_steering_angle_rad
         # Example: Proportional control (very basic)
         # Assume current speed is 0 for simplicity or needs feedback
         throttle_command = 0.0

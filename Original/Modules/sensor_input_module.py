@@ -1,7 +1,7 @@
 import queue
 import threading
 import time
-from data_structures import SensorData
+from .data_structures import SensorData
 import rospy # ROS 사용
 from sensor_msgs.msg import Image as RosImage # ROS Image 메시지
 from sensor_msgs.msg import LaserScan

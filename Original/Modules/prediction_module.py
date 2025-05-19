@@ -2,7 +2,7 @@ import queue
 import threading
 import time
 from typing import Dict, List
-from data_structures import (
+from .data_structures import (
     PerceptionOutput, LocalizationInfo, BehavioralPredictionOutput, PredictedTrajectory, DetectedObject
 )
 
