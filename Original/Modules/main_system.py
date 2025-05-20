@@ -2,6 +2,7 @@ import threading
 import queue
 import time
 import os # For creating dummy config if needed
+import logging
 
 # Import module classes
 from .sensor_input_module import SensorInputManager
@@ -14,6 +15,44 @@ from .data_structures import SensorData # And others if directly used here
 
 # Dummy config function
 def load_dummy_config() -> dict:
+    # PerceptionModule에서 사용할 기본 알고리즘 설정.
+    # track_drive.py에서 이 값을 오버라이드할 수 있습니다.
+    # None으로 설정 시 PerceptionModule은 "작업을 수행하기 위한 모듈이 선택되지 않았습니다" 메시지를 출력합니다.
+    default_active_perception_algorithm = None # 예: "hsv_lane_detection", "canny_hough_lane_detection", None
+
+    detection_config = {
+        "active_perception_algorithm": default_active_perception_algorithm,
+        "debug_cv_show": True, # Perception 모듈의 cv2.imshow 사용 여부
+
+        # 'hsv_lane_detection' 알고리즘을 위한 파라미터 블록
+        "hsv_lane_detection_params": {
+            "roi_y_start_ratio": 0.2, # HSV ROI용 (기존 0.8에서 수정)
+            "lower_white_hsv": [0, 0, 180],
+            "upper_white_hsv": [180, 30, 255],
+            "lower_yellow_hsv": [20, 100, 100],
+            "upper_yellow_hsv": [30, 255, 255],
+            "white_pixel_threshold": 300, # 흰색 픽셀 감지 임계값 (주로 HSV 결과에 사용)
+            "yellow_area_threshold": 100, # 노란색 영역 감지 임계값 (주로 HSV 결과에 사용)
+        },
+
+        # 'canny_hough_lane_detection' 알고리즘을 위한 파라미터 블록
+        "canny_hough_lane_detection_params": {
+            "canny_low_threshold": 50,
+            "canny_high_threshold": 150,
+            "hough_threshold": 20,
+            "hough_min_line_length": 10,
+            "hough_max_line_gap": 5,
+            "roi_y_start_ratio": 0.5, # Canny/Hough용 ROI
+        },
+
+        # 'custom_block_example' 알고리즘을 위한 파라미터 블록 (예시)
+        "custom_block_example_params": {
+            "custom_param_1": 123,
+            "custom_param_2": "test_value"
+        }
+        # 여기에 다른 알고리즘과 그 파라미터 블록을 추가할 수 있습니다.
+    }
+
     return {
         "image_width": 640, # 카메라 이미지 너비 (PlanningModule에서 사용)
         "image_height": 480, # 카메라 이미지 높이
@@ -21,26 +60,69 @@ def load_dummy_config() -> dict:
             "publish_rate_hz": 20 # 센서 데이터 발행 빈도
         },
         "perception_config": {
-            "detection": {
-                "canny_low_threshold": 50,
-                "canny_high_threshold": 150,
-                # ROI vertices can be added here if needed by DetectionComponent
-            }, 
+            "detection": detection_config,
             "scene_understanding": {}, "tracking": {}, "perception_prediction": {}
-        },
+            },
         "hd_map_path": "path/to/dummy_map.osm", # Example path
-        "localization_config": {},
-        "prediction_config": {},
-        "planning_config": {
-            "path_planner": {}, 
-            "decision_maker": {"target_speed_kph": 10.0}, # 기본 주행 속도
-            "action_planner": {"steering_kp": 0.006, "max_steer_rad": 0.4, "single_lane_steer_rad": 0.1}
+        "localization_config": {
+            "active_localization_strategy": "placeholder_localization", # or "ekf_slam", "particle_filter"
+            "placeholder_localization_params": {
+                "update_rate_hz": 10,
+                "sim_step_x": 0.05
+            },
+            # "ekf_slam_params": { ... }
         },
-        "control_config": {},
-        "vehicle_interface_config": { # This will be populated by track_drive.py
-            # "ros_motor_publisher": None,
-            # "ros_motor_msg_template": None
-        } 
+        "prediction_config": {
+            "active_prediction_strategy": "simple_extrapolation", # or "kalman_filter_cv", "social_lstm"
+            "simple_extrapolation_params": {
+                "prediction_horizon_sec": 2.0,
+                "time_step_sec": 0.5
+            },
+            # "kalman_filter_cv_params": { ... }
+        },
+        "planning_config": {
+            "path_planner": {
+                "active_strategy": "simple_waypoint_planner", # e.g., "a_star", "rrt_star"
+                "simple_waypoint_planner_params": {"num_waypoints": 5, "waypoint_spacing_m": 1.0}
+            },
+            "decision_maker": {
+                "active_strategy": "default_lane_keep", # e.g., "rule_based_traffic_logic"
+                "default_lane_keep_params": {"target_speed_kph": 10.0}, # 기본 주행 속도
+            },
+            "action_planner": {
+                # 기존 Canny 기반 차선 인식용 파라미터
+                "steering_kp": 0.006, 
+                "max_steer_rad": 0.4, 
+                "single_lane_steer_rad": 0.1,
+                # steering_balancing.py에서 가져온 파라미터
+                "initial_straight_frames": 50,
+                "initial_speed_xycar_units": 60,
+                "steering_gain": 0.6,
+                "steering_offset_gain_deg": 15,
+                "max_angle_deg": 30,
+                "yellow_fallback_gain": 0.005,
+                "yellow_max_angle_deg": 25,
+                "no_line_escape_angle_deg": -15,
+                "max_delta_steering_deg": 10,
+                # Xycar의 물리적 최대 속도 유닛이 50이라고 가정하고, 그 범위 내에서 속도 설정
+                "speed_tiers_xycar_units": {"straight": 45, "gentle_turn": 35, "sharp_turn": 25, "fallback": 20, "no_line": 20},
+                "xycar_speed_to_mps_factor": 0.028, # 예: 50 유닛 = 1.4 m/s (1.4 / 50.0)
+                "white_ratio_diff_threshold_for_offset": 0.05,
+            },
+        },
+        "control_config": {
+            "active_control_law": "basic_pid", # or "mpc_control"
+            "basic_pid_params": {
+                "max_control_speed_mps": 1.4, # 50 (Xycar units) * 0.028 (factor) = 1.4 m/s
+                "log_velocity_threshold_mps": 0.05,
+                "log_angle_threshold_rad": 0.005
+            }
+        },
+        "vehicle_interface_config": { 
+            "max_xycar_speed": 50.0, # Xycar의 최대 속도 유닛
+            "min_xycar_speed": 0.0
+            # ros_motor_publisher 등은 track_drive.py에서 채워짐
+        }
     }
 
 class MainSystem:
@@ -49,10 +131,10 @@ class MainSystem:
         self._initialize_queues()
         self._initialize_modules()
         self._threads = []
-        print("MainSystem: Initialized.")
+        logging.info("MainSystem: Initialized.")
 
     def _initialize_queues(self):
-        print("MainSystem: Initializing queues...")
+        logging.info("MainSystem: Initializing queues...")
         self.sensor_to_perception_queue = queue.Queue(maxsize=10)
 
         # Perception outputs to multiple modules
@@ -71,7 +153,7 @@ class MainSystem:
         self.direct_sensor_to_localization_queue = queue.Queue(maxsize=10) # Example
 
     def _initialize_modules(self):
-        print("MainSystem: Initializing modules...")
+        logging.info("MainSystem: Initializing modules...")
         # 1. Sensor Input
         # track_drive.py에서 CvBridge 객체를 config 통해 전달받는다고 가정
         ros_bridge_instance = self.config.get("ros_bridge")
@@ -147,7 +229,7 @@ class MainSystem:
 
 
     def start(self):
-        print("MainSystem: Starting all modules...")
+        logging.info("MainSystem: Starting all modules...")
         # Start sensor manager separately as it might manage its own thread(s) differently
         self.sensor_manager.start_sensors()
         time.sleep(0.5) # Give sensors a moment
@@ -157,18 +239,18 @@ class MainSystem:
             if hasattr(module, 'start') and module != self.sensor_manager : # sensor_manager already started
                 module.start()
                 self._threads.append(module._thread) # Assuming module._thread is the worker thread
-        print("MainSystem: All modules started.")
+        logging.info("MainSystem: All modules started.")
 
 
     def stop(self):
-        print("MainSystem: Stopping all modules...")
+        logging.info("MainSystem: Stopping all modules...")
 
         # Stop modules in reverse order of data flow or based on dependencies
         # Control first, then planning etc.
         # Or, signal all to stop and then join
         for module in reversed(self.modules): # sensor_manager will be last
             if hasattr(module, 'stop'):
-                print(f"MainSystem: Stopping {module.__class__.__name__}...")
+                logging.info(f"MainSystem: Stopping {module.__class__.__name__}...")
                 module.stop()
 
         # Join threads (if module.stop() doesn't join already)
@@ -176,22 +258,24 @@ class MainSystem:
         # For robustness, ensure threads are joined.
         for thread in self._threads:
             if thread and thread.is_alive():
-                print(f"MainSystem: Joining thread {thread.name}...")
+                logging.info(f"MainSystem: Joining thread {thread.name}...")
                 thread.join(timeout=5.0) # Add timeout to join
                 if thread.is_alive():
-                    print(f"MainSystem: WARNING - Thread {thread.name} did not terminate.")
+                    logging.warning(f"MainSystem: WARNING - Thread {thread.name} did not terminate.")
 
-        print("MainSystem: All modules stopped.")
+        logging.info("MainSystem: All modules stopped.")
 
 if __name__ == "__main__":
-    print("=============== Autonomous Driving System Simulation ===============")
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.info("=============== Autonomous Driving System Simulation ===============")
     # Create a dummy HD map file if it doesn't exist for HDMapInterface to load
     dummy_map_path = "path/to/dummy_map.hd"
     os.makedirs(os.path.dirname(dummy_map_path), exist_ok=True)
     if not os.path.exists(dummy_map_path):
         with open(dummy_map_path, 'w') as f:
             f.write("This is a dummy HD map file.\n")
-        print(f"Created dummy HD map file: {dummy_map_path}")
+        logger.info(f"Created dummy HD map file: {dummy_map_path}")
 
 
     config = load_dummy_config()
@@ -202,12 +286,12 @@ if __name__ == "__main__":
     try:
         system.start()
         # Let the system run for a short duration for demonstration
-        print("\nMainSystem: Running for 10 seconds...\n")
+        logger.info("\nMainSystem: Running for 10 seconds...\n")
         time.sleep(10)
 
     except KeyboardInterrupt:
-        print("\nMainSystem: KeyboardInterrupt received. Shutting down...")
+        logger.info("\nMainSystem: KeyboardInterrupt received. Shutting down...")
     finally:
-        print("\nMainSystem: Initiating shutdown sequence...")
+        logger.info("\nMainSystem: Initiating shutdown sequence...")
         system.stop()
-        print("=============== System Simulation Ended ===============")
+        logger.info("=============== System Simulation Ended ===============")

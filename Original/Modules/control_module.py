@@ -4,6 +4,9 @@ import time
 from .data_structures import ActionCommand, ControlActuatorCommands
 import numpy as np # For np.clip
 import math # For math.degrees
+import logging
+
+logger = logging.getLogger(__name__)
 
 class VehicleInterface:
     """Dummy interface to simulate sending commands to a vehicle."""
@@ -11,14 +14,14 @@ class VehicleInterface:
         self.config = config
         self.motor_publisher = motor_publisher
         self.motor_msg = motor_msg_template # This should be an instance of XycarMotor
-        self.max_speed = self.config.get("max_xycar_speed", 15.0) # Xycar의 최대 속도값 (0-50)
+        self.max_speed = self.config.get("max_xycar_speed", 50.0) # Xycar의 최대 속도값 (0-50)
         self.min_speed = self.config.get("min_xycar_speed", 0.0)
         self.max_angle = self.config.get("max_xycar_angle", 50.0) # Xycar의 최대 조향각 (절대값)
 
         if self.motor_publisher and self.motor_msg:
-            print(f"VehicleInterface: Initialized with ROS motor publisher. MaxSpeed: {self.max_speed}, MaxAngle: {self.max_angle}")
+            logger.info(f"VehicleInterface: Initialized with ROS motor publisher. MaxSpeed: {self.max_speed}, MaxAngle: {self.max_angle}")
         else:
-            print(f"VehicleInterface: Initialized (simulation mode - no ROS publisher). Config: {config}")
+            logger.warning(f"VehicleInterface: Initialized (simulation mode - no ROS publisher). Config: {config}")
 
     def send_commands(self, steering: float, throttle: float, brake: float):
         if self.motor_publisher and self.motor_msg:
@@ -46,10 +49,10 @@ class VehicleInterface:
             self.motor_msg.angle = float(target_angle_deg)
             self.motor_msg.speed = float(target_speed)
             self.motor_publisher.publish(self.motor_msg)
-            # print(f"VehicleInterface (ROS): Sent Angle: {self.motor_msg.angle:.2f}, Speed: {self.motor_msg.speed:.2f}")
+            # logger.debug(f"VehicleInterface (ROS): Sent Angle: {self.motor_msg.angle:.2f}, Speed: {self.motor_msg.speed:.2f}") # Frequent
         else:
             # 시뮬레이션 모드 또는 오류 처리
-            print(f"VehicleInterface (Sim): Steering(rad): {steering:.2f}, Throttle: {throttle:.2f}, Brake: {brake:.2f}")
+            logger.info(f"VehicleInterface (Sim): Steering(rad): {steering:.2f}, Throttle: {throttle:.2f}, Brake: {brake:.2f}")
 
 class ControlModule:
     def __init__(self, config: dict,
@@ -57,6 +60,14 @@ class ControlModule:
                  vehicle_interface_config: dict):
         self.config = config
         self.input_queue_planning = input_queue_planning
+
+        self.active_law_name = self.config.get("active_control_law", "basic_pid") # Default strategy
+        self.law_params = self.config.get(f"{self.active_law_name}_params", {})
+        logger.info(f"ControlModule: Active control law: {self.active_law_name} with params: {self.law_params}")
+
+        self.law_map = {
+            "basic_pid": self._execute_basic_pid_control,
+        }
         # vehicle_interface_config에 motor_publisher와 motor_msg_template이 주입되어야 함
         self.vehicle_interface = VehicleInterface(
             vehicle_interface_config,
@@ -68,24 +79,24 @@ class ControlModule:
         # 로그 출력을 위한 마지막 값 저장 변수 및 임계값
         self.last_logged_velocity_mps = None
         self.last_logged_steering_angle_rad = None
-        self.LOG_VELOCITY_THRESHOLD_MPS = self.config.get("log_velocity_threshold_mps", 0.05)  # m/s
-        self.LOG_ANGLE_THRESHOLD_RAD = self.config.get("log_angle_threshold_rad", 0.005)    # radians (approx 0.28 degrees)
+        # Parameters for logging thresholds are now part of the strategy's params
+        self.LOG_VELOCITY_THRESHOLD_MPS = self.law_params.get("log_velocity_threshold_mps", 0.05)
+        self.LOG_ANGLE_THRESHOLD_RAD = self.law_params.get("log_angle_threshold_rad", 0.005)
 
-        print("ControlModule: Initialized.")
+        logger.info("ControlModule: Initialized.")
 
-    def _translate_action_to_commands(self, action: ActionCommand) -> ControlActuatorCommands:
+    def _execute_basic_pid_control(self, action: ActionCommand, params: dict) -> ControlActuatorCommands:
         # Placeholder for translating ActionCommand (velocity/angle) to low-level actuator commands
         # This would involve PID controllers or other vehicle dynamics models.
-        
+
         # 로그 출력 조건 확인
         should_log = (
             self.last_logged_velocity_mps is None or
             abs(action.target_velocity_mps - self.last_logged_velocity_mps) > self.LOG_VELOCITY_THRESHOLD_MPS or
             abs(action.target_steering_angle_rad - self.last_logged_steering_angle_rad) > self.LOG_ANGLE_THRESHOLD_RAD
         )
-
         if should_log:
-            print(f"ControlModule: Translating action: Vel={action.target_velocity_mps} m/s, Angle={action.target_steering_angle_rad} rad")
+            logger.debug(f"BasicPIDControl: Translating action: Vel={action.target_velocity_mps:.2f} m/s, Angle={action.target_steering_angle_rad:.3f} rad")
             self.last_logged_velocity_mps = action.target_velocity_mps
             self.last_logged_steering_angle_rad = action.target_steering_angle_rad
         # Example: Proportional control (very basic)
@@ -96,7 +107,7 @@ class ControlModule:
         # target_velocity_mps를 throttle/brake로 변환 (0~1 범위)
         # 이 로직은 차량 모델과 제어 전략에 따라 매우 달라질 수 있음.
         # 여기서는 간단한 비례 제어를 가정.
-        max_module_speed_mps = self.config.get("max_control_speed_mps", 5.0) # m/s 단위의 최대 제어 속도
+        max_module_speed_mps = params.get("max_control_speed_mps", 1.4) # m/s 단위의 최대 제어 속도
         
         if action.target_velocity_mps > 0.05: # 전진
             throttle_command = np.clip(action.target_velocity_mps / max_module_speed_mps, 0.0, 1.0)
@@ -114,35 +125,43 @@ class ControlModule:
         )
 
     def run(self):
-        print("ControlModule: Thread started.")
+        logger.info(f"ControlModule: Thread started. Control Law: {self.active_law_name}")
+        selected_law_method = self.law_map.get(self.active_law_name)
+
         while self._running:
             try:
                 action_command: ActionCommand = self.input_queue_planning.get(timeout=1.0)
-                control_commands = self._translate_action_to_commands(action_command)
-                self.vehicle_interface.send_commands(
-                    control_commands.steering_command,
-                    control_commands.throttle_command,
-                    control_commands.brake_command
-                )
+                if selected_law_method:
+                    control_commands = selected_law_method(action_command, self.law_params)
+                    self.vehicle_interface.send_commands(
+                        control_commands.steering_command,
+                        control_commands.throttle_command,
+                        control_commands.brake_command
+                    )
+                else:
+                    logger.warning(f"ControlModule: Control law '{self.active_law_name}' not found.")
+                    # Fallback: send zero commands or hold last command? For safety, maybe zero.
+                    self.vehicle_interface.send_commands(steering=0.0, throttle=0.0, brake=0.2) # Gentle brake
+
                 self.input_queue_planning.task_done()
             except queue.Empty:
                 if not self._running:
                     break
                 continue
             except Exception as e:
-                print(f"ControlModule: Error processing command: {e}")
-        print("ControlModule: Thread stopped.")
+                logger.error(f"ControlModule: Error processing command: {e}", exc_info=True)
+        logger.info("ControlModule: Thread stopped.")
 
     def start(self):
         if not self._running:
             self._running = True
             self._thread = threading.Thread(target=self.run, name="ControlThread")
             self._thread.start()
-            print("ControlModule: Started.")
+            logger.info("ControlModule: Started.")
 
     def stop(self):
         if self._running:
             self._running = False
             if self._thread:
                 self._thread.join(timeout=2.0)
-            print("ControlModule: Stopped.")
+            logger.info("ControlModule: Stopped.")
