@@ -5,6 +5,7 @@ from .data_structures import SensorData
 import rospy # ROS 사용
 from sensor_msgs.msg import Image as RosImage # ROS Image 메시지
 from sensor_msgs.msg import LaserScan
+import logging
 from cv_bridge import CvBridge # CvBridge 사용 (선언만 하고 실제 인스턴스는 외부에서 주입받도록 수정)
 
 class SensorInputManager:
@@ -22,7 +23,7 @@ class SensorInputManager:
         self.bridge = ros_bridge
         if self.bridge is None:
             print("SensorInputManager: Warning - CvBridge not provided. ROS Image conversion will fail.")
-        
+            logging.warning("SensorInputManager: Warning - CvBridge not provided. ROS Image conversion will fail.")
         self.latest_image_data = None
         self.latest_lidar_data = None
         self.image_timestamp = None
@@ -40,6 +41,7 @@ class SensorInputManager:
                 self.image_timestamp = data.header.stamp.to_sec()
         except Exception as e:
             print(f"SensorInputManager: Error converting ROS Image: {e}")
+            logging.error(f"SensorInputManager: Error converting ROS Image: {e}")
 
     def _ros_lidar_callback(self, data: LaserScan):
         with self.lock:
@@ -82,9 +84,9 @@ class SensorInputManager:
                 try:
                     self.output_queue.put(sensor_bundle, timeout=0.5)
                 except queue.Full:
-                    print("SensorInputManager: Output queue is full. Discarding data.")
+                    logging.warning("SensorInputManager: Output queue is full. Discarding data.")
             time.sleep(sleep_duration) 
-        print("SensorInputManager: Data publishing loop stopped.")
+        print("SensorInputManager: Data publishing loop stopped.") # This print was already here
 
     def start_sensors(self):
         """Starts the sensor data acquisition thread."""
@@ -92,11 +94,12 @@ class SensorInputManager:
             self._running = True
             # ROS Subscribers
             if self.bridge: # Only subscribe if bridge is available
-                rospy.Subscriber("/usb_cam/image_raw/", RosImage, self._ros_image_callback, queue_size=1)
+                rospy.Subscriber("/usb_cam/image_raw", RosImage, self._ros_image_callback, queue_size=1)
                 rospy.Subscriber("/scan", LaserScan, self._ros_lidar_callback, queue_size=1)
                 print("SensorInputManager: ROS subscribers for Camera and LiDAR started.")
             else:
                 print("SensorInputManager: CvBridge not available, ROS subscribers not started. Will use dummy data if _read_and_publish_data is used.")
+                logging.warning("SensorInputManager: CvBridge not available, ROS subscribers not started. Will use dummy data if _read_and_publish_data is used.")
             
             # Start the thread that packages and queues data
             self._thread = threading.Thread(target=self._publish_sensor_data_loop, name="SensorDataPublisherThread")

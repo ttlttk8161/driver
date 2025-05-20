@@ -27,6 +27,20 @@ class TrafficSignInfo(NamedTuple):
     position_3d: Tuple[float, float, float]
     confidence: float
 
+class WhiteLineHsvMetrics(NamedTuple): #HSV색 공간 기반의 차선 감지 결과 저장을 위한 데이터 구조
+    timestamp: float
+    total_white_pixels: int
+    left_ratio: float
+    mid_ratio: float
+    right_ratio: float
+    is_detected: bool
+
+class YellowLineHsvMetrics(NamedTuple): #HSV색 공간 기반의 차선 감지 결과 저장을 위한 데이터 구조
+    timestamp: float
+    area: float # M['m00']
+    center_x: Optional[int] # cx, ROI 좌표계 기준
+    is_detected: bool
+
 class PerceptionOutput(NamedTuple):
     timestamp: float
     detected_objects: List[DetectedObject]
@@ -40,6 +54,8 @@ class PerceptionOutput(NamedTuple):
     scene_flow_map: Optional[Any]
     # Data that might be useful for a separate SLAM/Localization module if not fully handled within perception
     raw_features_for_localization: Optional[Any]
+    white_line_hsv_metrics: Optional[WhiteLineHsvMetrics]
+    yellow_line_hsv_metrics: Optional[YellowLineHsvMetrics]
 
 class LocalizationInfo(NamedTuple):
     timestamp: float
