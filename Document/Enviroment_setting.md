@@ -14,6 +14,78 @@
     ```bash
     pip install opencv-python
     ```
+*   **가상환경 사용2**: 첨부된 cwnu2 가상환경을 사용하셔야합니다. 절차는 다음과 같습니다.
+    ```
+    1. 가상환경을 활성화합니다.
+        ```bash
+        source /path/to/cwnu2/bin/activate
+        ```
+    2. (cwnu2) xytron@DongHyun:~/cwnu2$ cd YOLOv8-multi-task/
+        (cwnu2) xytron@DongHyun:~/cwnu2/YOLOv8-multi-task$ pip install -r requirements.txt
+    3. (cwnu2) xytron@DongHyun:~/cwnu2/YOLOv8-multi-task$ pip install -e .
+
+    이 문서는 `track_drive.py` 프로그램과 `Modules` 폴더 내의 파이썬 모듈들이 올바르게 동작하기 위해 필요한 패키지 설치 및 환경 변수 설정 방법을 안내합니다. 작업물을 다른 사람에게 전달할 때 이 문서를 함께 제공하여 원활한 환경 구성을 도울 수 있습니다.
+    
+    ## 0. (선택 사항) 메모리 부족 시 스왑(Swap) 공간 확장 안내
+    
+    `requirements.txt`에 포함된 일부 패키지(예: `torch`, `tensorflow` 등)는 설치 과정에서 많은 메모리를 사용할 수 있습니다. 시스템의 RAM이 부족한 경우, 설치가 실패하거나 시스템이 매우 느려질 수 있습니다. 이 경우 스왑 공간을 확장하여 문제를 해결할 수 있습니다.
+    
+    **주의**: 아래 명령어들은 시스템 설정을 변경하며, `sudo` 권한이 필요합니다. 진행하기 전에 현재 시스템 상태를 이해하고 신중하게 실행하십시오.
+    
+    **1. 현재 스왑 공간 확인**
+    
+    터미널에서 다음 명령어를 실행하여 현재 스왑 공간을 확인합니다.
+    ```bash
+    free -h
+    swapon --show
+    ```
+    `Swap` 항목의 `total` 및 `used` 값을 확인합니다. `used`가 `total`에 근접하거나 `total`이 매우 작다면(예: 1GB 이하), 스왑 공간 확장을 고려하십시오.
+    
+    **2. 스왑 파일 생성 및 활성화 (예: 4GB 추가)**
+    
+    다음은 `/swapfile_extra`라는 이름으로 4GB 크기의 스왑 파일을 생성하고 활성화하는 예시입니다. 필요에 따라 용량(`4G`)이나 파일명은 변경할 수 있습니다.
+    
+    ```bash
+    # 스왑 파일 생성 (4GB)
+    sudo fallocate -l 4G /swapfile_extra
+    # 만약 fallocate 명령어 사용이 불가능하다면 dd 명령어를 사용합니다:
+    # sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=4096
+    
+    # 스왑 파일 권한 설정
+    sudo chmod 600 /swapfile_extra
+    
+    # 스왑 파일로 포맷
+    sudo mkswap /swapfile_extra
+    
+    # 생성한 스왑 파일 활성화
+    sudo swapon /swapfile_extra
+    ```
+    
+    **3. 스왑 공간 재확인**
+    
+    다시 다음 명령어로 스왑 공간이 정상적으로 확장되었는지 확인합니다.
+    ```bash
+    free -h
+    swapon --show
+    ```
+    새로 추가한 `/swapfile_extra`가 목록에 보이고, 전체 스왑 크기가 증가했는지 확인합니다.
+    
+    **4. (선택 사항) 재부팅 후에도 스왑 파일 유지**
+    
+    위 설정은 현재 세션에만 유효합니다. 재부팅 후에도 이 스왑 파일을 계속 사용하려면 `/etc/fstab` 파일에 등록해야 합니다.
+    
+    먼저, 만약을 위해 `/etc/fstab` 파일을 백업합니다.
+    ```bash
+    sudo cp /etc/fstab /etc/fstab.bak
+    ```
+    그 다음, `/etc/fstab` 파일에 다음 내용을 추가합니다.
+    ```bash
+    echo '/swapfile_extra none swap sw 0 0' | sudo tee -a /etc/fstab
+    ```
+    이제 시스템을 재부팅해도 `/swapfile_extra` 스왑 파일이 자동으로 활성화됩니다.
+    
+    이 과정을 통해 메모리 부족으로 인한 패키지 설치 문제를 예방할 수 있습니다.
+    
 
 ## 2. ROS (Robot Operating System) 환경 설정
 

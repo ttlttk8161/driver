@@ -39,34 +39,43 @@ class PredictionModule:
         # Uses perceived objects and ego state to predict future trajectories/intentions of other agents
         # logger.debug(f"SimpleExtrapolation: Predicting behavior based on perception at {perception_data.timestamp} and localization at {ego_localization.timestamp}")
 
+        output_timestamp = perception_data.timestamp if perception_data else time.time()
         predicted_trajectories: List[PredictedTrajectory] = []
+        
         prediction_horizon_sec = params.get("prediction_horizon_sec", 2.0)
         time_step_sec = params.get("time_step_sec", 0.5)
+        default_pred_vel_x = params.get("default_pred_vel_x", 0.5) # m/s
+        default_pred_vel_y = params.get("default_pred_vel_y", 0.0) # m/s
 
-        for obj in perception_data.detected_objects:
-            # Example: Simple extrapolation or more complex model (RNN, etc.)
-            if obj.id == 1: # Example: predict for object with ID 1
-                path = []
+        if perception_data and perception_data.detected_objects:
+            for obj in perception_data.detected_objects:
+                path_points = []
                 current_pos = obj.position_3d
-                current_vel = obj.velocity if obj.velocity else (0,0,0)
-                for t_offset in [0.5, 1.0, 1.5, 2.0]: # Predict up to 2 seconds ahead
+                # 객체의 현재 속도가 없으면 기본 예측 속도 사용
+                current_vel = obj.velocity if obj.velocity else (default_pred_vel_x, default_pred_vel_y, 0.0)
+                
+                num_steps = 0
+                if time_step_sec > 1e-3: # 0으로 나누기 방지
+                    num_steps = int(prediction_horizon_sec / time_step_sec)
+                
+                if num_steps == 0 and prediction_horizon_sec > 0: # horizon이 있지만 step이 너무 크면 최소 1 step
+                    num_steps = 1
+                    
+                for i in range(1, num_steps + 1):
+                    t_offset = i * time_step_sec
                     pred_x = current_pos[0] + current_vel[0] * t_offset
                     pred_y = current_pos[1] + current_vel[1] * t_offset
-                    pred_z = current_pos[2] # Assuming 2D movement for simplicity
-                    path.append((pred_x, pred_y, pred_z)) # Storing (x,y,z) at time t_offset
+                    pred_z = current_pos[2] + current_vel[2] * t_offset # Z축 예측도 포함
+                    path_points.append((pred_x, pred_y, pred_z))
                 
-                # Generate time offsets based on horizon and step
-                # num_steps = int(prediction_horizon_sec / time_step_sec)
-                # for i in range(1, num_steps + 1):
-                #    t_offset = i * time_step_sec ... (more detailed implementation)
-                predicted_trajectories.append(
-                    PredictedTrajectory(object_id=obj.id, probability=0.8, path_points=path)
-                )
+                if path_points: # 경로 포인트가 생성된 경우에만 추가
+                    predicted_trajectories.append(
+                        PredictedTrajectory(object_id=obj.id, probability=0.7, path_points=path_points)
+                    )
+        # else:
+            # logger.debug("SimpleExtrapolation: No detected objects or perception data.")
 
-        return BehavioralPredictionOutput(
-            timestamp=perception_data.timestamp,
-            predicted_trajectories=predicted_trajectories
-        )
+        return BehavioralPredictionOutput(timestamp=output_timestamp, predicted_trajectories=predicted_trajectories)
 
     def run(self):
         logger.info(f"PredictionModule: Thread started. Strategy: {self.active_strategy_name}")

@@ -53,76 +53,120 @@ def load_dummy_config() -> dict:
         # 여기에 다른 알고리즘과 그 파라미터 블록을 추가할 수 있습니다.
     }
 
+    # PerceptionModule 전체 설정
+    perception_config = {
+        "detection": detection_config, # 위에서 정의한 detection_config 사용
+        "scene_understanding": {}, # 필요시 이들도 외부 정의 및 상세 설정 가능
+        "tracking": {},
+        "perception_prediction": {} # Perception 모듈 내 예측 컴포넌트용 (BehavioralPredictionModule과 다름)
+    }
+
+    # SensorInputManager 설정
+    sensor_input_config = {
+        "publish_rate_hz": 20 # 센서 데이터 발행 빈도
+    }
+
+    # LocalizationModule 설정
+    default_active_localization_strategy = "placeholder_localization" # 사용할 알고리즘 명을 기입.
+    localization_config = {
+        "active_localization_strategy": default_active_localization_strategy, # or "ekf_slam", "particle_filter"
+        "placeholder_localization_params": {
+            "update_rate_hz": 10,
+            "sim_step_x": 0.05
+        },
+        # "ekf_slam_params": { ... }
+    }
+
+    # PredictionModule 설정
+    default_active_prediction_strategy = "simple_extrapolation" # 사용할 알고리즘 명을 기입.
+    prediction_config = {
+        "active_prediction_strategy": default_active_prediction_strategy, # or "kalman_filter_cv", "social_lstm"
+        "simple_extrapolation_params": {
+            "prediction_horizon_sec": 2.0,
+            "time_step_sec": 0.5
+        },
+        # "kalman_filter_cv_params": { ... }
+    }
+
+    # PlanningModule 설정. [총 3개 Component설정해서 planning_config을 세팅하는 방식임]
+    # 1. PathPlannerComponent 설정
+    default_active_path_planner_strategy = "simple_waypoint_planner" # 사용할 알고리즘 명을 기입.
+    path_planner_sub_config = {
+        "active_strategy": default_active_path_planner_strategy, # e.g., "a_star", "rrt_star"
+        "simple_waypoint_planner_params": {"num_waypoints": 5, "waypoint_spacing_m": 1.0}
+    }
+
+    # 2. DecisionMakerComponent 설정
+    default_active_decision_maker_strategy = "default_lane_keep" # 사용할 알고리즘 명을 기입.
+    decision_maker_sub_config = {
+        "active_strategy": default_active_decision_maker_strategy, # e.g., "rule_based_traffic_logic"
+        "default_lane_keep_params": {"target_speed_kph": 10.0}, # 기본 주행 속도
+    }
+
+    # 3. ActionPlannerComponent 설정
+    default_active_action_strategy = "hsv_direct_steering" # 사용할 알고리즘 명을 기입.
+    action_planner_sub_config = {
+        "active_action_strategy": default_active_action_strategy, # 또는 "path_tracking_pid" 등
+        "hsv_direct_steering_params": {
+            # 기존 Canny 기반 차선 인식용 파라미터 (필요시 여기에 통합 또는 별도 관리)
+            # "steering_kp": 0.006, 
+            # "max_steer_rad": 0.4, 
+            # "single_lane_steer_rad": 0.1,
+            # steering_balancing.py에서 가져온 파라미터
+            "initial_straight_frames": 50,
+            "initial_speed_xycar_units": 60, # ActionPlannerComponent에서 사용하던 값
+            "white_steering_gain": 0.6,      # ActionPlannerComponent에서 사용하던 값 (steering_gain)
+            "white_max_angle_deg": 30,       # ActionPlannerComponent에서 사용하던 값 (max_angle_deg)
+            "white_offset_ratio_threshold": 0.05, # ActionPlannerComponent에서 사용하던 값
+            "white_offset_angle_deg": 15,    # ActionPlannerComponent에서 사용하던 값 (steering_offset_gain_deg)
+            "yellow_fallback_steering_gain": 0.005, # ActionPlannerComponent에서 사용하던 값 (yellow_fallback_gain)
+            "yellow_fallback_max_angle_deg": 25,    # ActionPlannerComponent에서 사용하던 값 (yellow_max_angle_deg)
+            "no_line_escape_angle_deg": -15,        # ActionPlannerComponent에서 사용하던 값
+            "max_steering_delta_deg": 10,           # ActionPlannerComponent에서 사용하던 값 (max_delta_steering_deg)
+            # Xycar의 물리적 최대 속도 유닛이 50이라고 가정하고, 그 범위 내에서 속도 설정
+            "speed_tiers_xycar_units": {"straight": 45, "gentle_turn": 35, "sharp_turn": 25, "no_line_or_fallback": 20}, # fallback 이름 일치
+            "xycar_speed_to_mps_factor": 0.028, # 예: 50 유닛 = 1.4 m/s (1.4 / 50.0)
+        },
+        # "path_tracking_pid_params": { # 다른 전략을 위한 파라미터 블록 예시
+        #     "kp": 0.1, "ki": 0.01, "kd": 0.05, "lookahead_distance": 2.0
+        # }
+    }
+    # Combined..!
+    planning_config = {
+        "path_planner": path_planner_sub_config,
+        "decision_maker": decision_maker_sub_config,
+        "action_planner": action_planner_sub_config,
+    }
+
+    # ControlModule 설정
+    default_active_control_law = "basic_pid"
+    control_config = {
+        "active_control_law": default_active_control_law, # or "mpc_control"
+        "basic_pid_params": {
+            "max_control_speed_mps": 1.4, # 50 (Xycar units) * 0.028 (factor) = 1.4 m/s
+            "log_velocity_threshold_mps": 0.05,
+            "log_angle_threshold_rad": 0.005
+        }
+    }
+
+    # VehicleInterface 설정 (ControlModule 내부에서 사용)
+    vehicle_interface_config = { 
+        "max_xycar_speed": 50.0, # Xycar의 최대 속도 유닛
+        "min_xycar_speed": 0.0
+        # ros_motor_publisher 등은 track_drive.py에서 채워짐
+    }
+
     return {
         "image_width": 640, # 카메라 이미지 너비 (PlanningModule에서 사용)
         "image_height": 480, # 카메라 이미지 높이
-        "sensor_input_config": {
-            "publish_rate_hz": 20 # 센서 데이터 발행 빈도
-        },
-        "perception_config": {
-            "detection": detection_config,
-            "scene_understanding": {}, "tracking": {}, "perception_prediction": {}
-            },
-        "hd_map_path": "path/to/dummy_map.osm", # Example path
-        "localization_config": {
-            "active_localization_strategy": "placeholder_localization", # or "ekf_slam", "particle_filter"
-            "placeholder_localization_params": {
-                "update_rate_hz": 10,
-                "sim_step_x": 0.05
-            },
-            # "ekf_slam_params": { ... }
-        },
-        "prediction_config": {
-            "active_prediction_strategy": "simple_extrapolation", # or "kalman_filter_cv", "social_lstm"
-            "simple_extrapolation_params": {
-                "prediction_horizon_sec": 2.0,
-                "time_step_sec": 0.5
-            },
-            # "kalman_filter_cv_params": { ... }
-        },
-        "planning_config": {
-            "path_planner": {
-                "active_strategy": "simple_waypoint_planner", # e.g., "a_star", "rrt_star"
-                "simple_waypoint_planner_params": {"num_waypoints": 5, "waypoint_spacing_m": 1.0}
-            },
-            "decision_maker": {
-                "active_strategy": "default_lane_keep", # e.g., "rule_based_traffic_logic"
-                "default_lane_keep_params": {"target_speed_kph": 10.0}, # 기본 주행 속도
-            },
-            "action_planner": {
-                # 기존 Canny 기반 차선 인식용 파라미터
-                "steering_kp": 0.006, 
-                "max_steer_rad": 0.4, 
-                "single_lane_steer_rad": 0.1,
-                # steering_balancing.py에서 가져온 파라미터
-                "initial_straight_frames": 50,
-                "initial_speed_xycar_units": 60,
-                "steering_gain": 0.6,
-                "steering_offset_gain_deg": 15,
-                "max_angle_deg": 30,
-                "yellow_fallback_gain": 0.005,
-                "yellow_max_angle_deg": 25,
-                "no_line_escape_angle_deg": -15,
-                "max_delta_steering_deg": 10,
-                # Xycar의 물리적 최대 속도 유닛이 50이라고 가정하고, 그 범위 내에서 속도 설정
-                "speed_tiers_xycar_units": {"straight": 45, "gentle_turn": 35, "sharp_turn": 25, "fallback": 20, "no_line": 20},
-                "xycar_speed_to_mps_factor": 0.028, # 예: 50 유닛 = 1.4 m/s (1.4 / 50.0)
-                "white_ratio_diff_threshold_for_offset": 0.05,
-            },
-        },
-        "control_config": {
-            "active_control_law": "basic_pid", # or "mpc_control"
-            "basic_pid_params": {
-                "max_control_speed_mps": 1.4, # 50 (Xycar units) * 0.028 (factor) = 1.4 m/s
-                "log_velocity_threshold_mps": 0.05,
-                "log_angle_threshold_rad": 0.005
-            }
-        },
-        "vehicle_interface_config": { 
-            "max_xycar_speed": 50.0, # Xycar의 최대 속도 유닛
-            "min_xycar_speed": 0.0
-            # ros_motor_publisher 등은 track_drive.py에서 채워짐
-        }
+        "sensor_input_config": sensor_input_config,
+        "perception_config": perception_config, # 외부에서 정의된 perception_config 사용
+        # "hd_map_path": "path/to/dummy_map.osm", # Example path
+        "localization_config": localization_config,
+        "prediction_config": prediction_config,
+        "planning_config": planning_config,
+        "control_config": control_config,
+        "vehicle_interface_config": vehicle_interface_config
     }
 
 class MainSystem:

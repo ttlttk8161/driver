@@ -162,9 +162,54 @@ def start():
             config["perception_config"] = {}
         if "detection" not in config["perception_config"]:
             config["perception_config"]["detection"] = {}
-        config["perception_config"]["detection"]["active_perception_algorithm"] = None # 여기에 원하는 알고리즘 이름 또는 None 설정
+        # 여기에 원하는 인식 알고리즘 이름 또는 None 설정 (예: "hsv_lane_detection", "canny_hough_lane_detection")
+        config["perception_config"]["detection"]["active_perception_algorithm"] = "hsv_lane_detection"
         logging.info(f"Active perception algorithm set to: {config['perception_config']['detection']['active_perception_algorithm']}")
         # --- Perception Algorithm Selection End ---
+
+        # --- Localization Algorithm Selection ---
+        if "localization_config" not in config:
+            config["localization_config"] = {}
+        # 여기에 원하는 위치 추정 전략 이름 설정 (예: "placeholder_localization")
+        config["localization_config"]["active_localization_strategy"] = "placeholder_localization"
+        logging.info(f"Active localization strategy set to: {config['localization_config']['active_localization_strategy']}")
+        # --- Localization Algorithm Selection End ---
+
+        # --- Prediction Algorithm Selection ---
+        if "prediction_config" not in config:
+            config["prediction_config"] = {}
+        # 여기에 원하는 예측 전략 이름 설정 (예: "simple_extrapolation")
+        config["prediction_config"]["active_prediction_strategy"] = "simple_extrapolation"
+        logging.info(f"Active prediction strategy set to: {config['prediction_config']['active_prediction_strategy']}")
+        # --- Prediction Algorithm Selection End ---
+
+        # --- Planning Algorithm Selection ---
+        if "planning_config" not in config:
+            config["planning_config"] = {}
+        # PathPlanner
+        if "path_planner" not in config["planning_config"]:
+            config["planning_config"]["path_planner"] = {}
+        config["planning_config"]["path_planner"]["active_strategy"] = "simple_waypoint_planner"
+        logging.info(f"Active path_planner strategy set to: {config['planning_config']['path_planner']['active_strategy']}")
+        # DecisionMaker
+        if "decision_maker" not in config["planning_config"]:
+            config["planning_config"]["decision_maker"] = {}
+        config["planning_config"]["decision_maker"]["active_strategy"] = "default_lane_keep"
+        logging.info(f"Active decision_maker strategy set to: {config['planning_config']['decision_maker']['active_strategy']}")
+        # ActionPlanner
+        if "action_planner" not in config["planning_config"]:
+            config["planning_config"]["action_planner"] = {}
+        config["planning_config"]["action_planner"]["active_action_strategy"] = "hsv_direct_steering"
+        logging.info(f"Active action_planner strategy set to: {config['planning_config']['action_planner']['active_action_strategy']}")
+        # --- Planning Algorithm Selection End ---
+
+        # --- Control Algorithm Selection ---
+        if "control_config" not in config:
+            config["control_config"] = {}
+        # 여기에 원하는 제어 법칙 이름 설정 (예: "basic_pid")
+        config["control_config"]["active_control_law"] = "basic_pid"
+        logging.info(f"Active control law set to: {config['control_config']['active_control_law']}")
+        # --- Control Algorithm Selection End ---
 
         # ROS 관련 객체를 config에 추가하여 MainSystem으로 전달
         config["ros_bridge"] = bridge # SensorInputManager에서 CvBridge 사용 위함

@@ -2,7 +2,7 @@ import logging
 import queue
 import threading
 import time
-from .data_structures import SensorData, PerceptionOutput, WhiteLineHsvMetrics, YellowLineHsvMetrics # 필요한 데이터 구조 import
+from .data_structures import SensorData, PerceptionOutput, WhiteLineHsvMetrics, YellowLineHsvMetrics, LaneMarking, DetectedObject # 필요한 데이터 구조 import
 
 # 로깅 설정 (애플리케이션의 다른 부분에서 이미 설정되었을 수 있습니다)
 # 예: logging.basicConfig(level=logging.INFO)
@@ -106,23 +106,52 @@ class PerceptionModule:
         Returns:
             dict: 인식 결과를 담은 딕셔너리 (예: {"white_line_hsv_metrics": WhiteLineHsvMetrics(...), ...})
         """
-        # logger.debug(f"Running _execute_hsv_lane_detection with params: {params}")
-        # 여기에 실제 HSV 차선 감지 로직을 구현합니다.
-        # 예: h_min = params.get('h_min', 0)
-        # 실제로는 WhiteLineHsvMetrics, YellowLineHsvMetrics 등을 계산하여 반환해야 합니다.
-        # 예시로 빈 메트릭 반환
-        return {
-            "white_line_hsv_metrics": WhiteLineHsvMetrics(time.time(), 0, 0,0,0, False),
-            "yellow_line_hsv_metrics": YellowLineHsvMetrics(time.time(), 0, None, False)
-        }
+        current_time = time.time()
+        if image is not None:
+            # 실제 HSV 처리 로직 대신, 감지된 것처럼 더미 데이터 생성
+            # logger.debug(f"Running _execute_hsv_lane_detection with params: {params}")
+            simulated_white_pixels = params.get("sim_white_pixels", 1500)
+            simulated_yellow_area = params.get("sim_yellow_area", 800)
+            
+            # 이미지 너비의 중앙값을 기준으로 좌/우 비율 설정 (더미)
+            # image_center_x = image.shape[1] / 2 if image is not None else 320
+
+            return {
+                "white_line_hsv_metrics": WhiteLineHsvMetrics(
+                    timestamp=current_time, 
+                    total_white_pixels=simulated_white_pixels, 
+                    left_ratio=0.45,  # Dummy ratio
+                    mid_ratio=0.1,   # Dummy ratio
+                    right_ratio=0.45, # Dummy ratio
+                    is_detected=True
+                ),
+                "yellow_line_hsv_metrics": YellowLineHsvMetrics(
+                    timestamp=current_time, 
+                    area=simulated_yellow_area, 
+                    center_x=320, # Dummy center_x, assuming ROI width of 640
+                    is_detected=True
+                )
+            }
+        else: # 이미지가 없으면 미감지로 처리
+            return {
+                "white_line_hsv_metrics": WhiteLineHsvMetrics(current_time, 0, 0,0,0, False),
+                "yellow_line_hsv_metrics": YellowLineHsvMetrics(current_time, 0, None, False)
+            }
 
     def _execute_canny_hough_lane_detection(self, image, params) -> dict:
         """
         Canny Hough 차선 감지 알고리즘 예시 플레이스홀더입니다.
         """
-        # logger.debug(f"Running _execute_canny_hough_lane_detection with params: {params}")
-        # 여기에 실제 Canny + Hough 차선 감지 로직을 구현합니다.
-        return {} # 빈 결과 반환
+        lane_markings = []
+        detected_objects = [] # Canny/Hough는 주로 차선 감지용이지만, 객체 감지 결과도 여기서 통합 가능
+        if image is not None:
+            # logger.debug(f"Running _execute_canny_hough_lane_detection with params: {params}")
+            # 더미 차선 포인트 (차량 로컬 좌표계 가정: x 전방, y 좌측)
+            left_lane_points = [(x * 1.0, params.get("dummy_left_y", 1.5) + x * 0.01) for x in range(1, 6)] # 약간 휘어지는 차선
+            right_lane_points = [(x * 1.0, params.get("dummy_right_y", -1.5) - x * 0.01) for x in range(1, 6)]
+            lane_markings.append(LaneMarking(points=left_lane_points, type="solid_white", confidence=0.6))
+            lane_markings.append(LaneMarking(points=right_lane_points, type="solid_yellow", confidence=0.6))
+        return {"lane_markings": lane_markings, "detected_objects": detected_objects}
 
     def _execute_custom_block_example(self, image, params) -> dict:
         """

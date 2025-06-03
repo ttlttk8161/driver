@@ -24,18 +24,26 @@ class LocalizationModule:
                  input_queue_perception: queue.Queue,
                  input_queue_sensor: Optional[queue.Queue], # For direct GNSS/IMU
                  output_queues: Dict[str, queue.Queue]):
-        self.config = config
+        self.module_config = config if config is not None else {} # 전체 localization_config 저장
         self.hd_map = HDMapInterface(hd_map_path)
         self.input_queue_perception = input_queue_perception
-        self.input_queue_sensor = input_queue_sensor # Can be None if sensors go via perception
-        self.output_queues = output_queues # e.g., {"prediction": q_pred, "planning": q_plan}
+        self.input_queue_sensor = input_queue_sensor 
+        self.output_queues = output_queues
 
-        self.active_strategy_name = self.config.get("active_localization_strategy", "placeholder_localization")
-        self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
-        logger.info(f"LocalizationModule: Active strategy: {self.active_strategy_name} with params: {self.strategy_params}")
+        # main_system.py의 load_dummy_config()에 정의된 구조를 따름
+        # self.module_config = {"active_strategy": "...", "strategies": {"placeholder_localization_params": {...}, ...}}
+        self.active_strategy_name = self.module_config.get("active_strategy", "placeholder_localization")
+        
+        # 활성화된 전략의 파라미터를 가져옵니다.
+        # 파라미터는 "strategies" 딕셔너리 내에 각 전략 이름 + "_params" 키로 저장되어 있습니다.
+        all_strategies_params = self.module_config.get("strategies", {})
+        self.current_strategy_params = all_strategies_params.get(f"{self.active_strategy_name}_params", {})
+        
+        logger.info(f"LocalizationModule: Initialized. Active strategy: {self.active_strategy_name} with params: {self.current_strategy_params}")
 
         self.strategy_map = {
             "placeholder_localization": self._execute_placeholder_localization,
+            # "ekf_slam": self._execute_ekf_slam, # 예시: 새로운 전략 추가 시
         }
 
         self._current_localization = LocalizationInfo(
@@ -86,43 +94,60 @@ class LocalizationModule:
         logger.info(f"LocalizationModule: Thread started. Strategy: {self.active_strategy_name}")
         selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
 
+        if not selected_strategy_method and self.active_strategy_name is not None:
+            logger.error(f"LocalizationModule: Active strategy '{self.active_strategy_name}' has no corresponding method in strategy_map!")
+            # 선택적: 여기서 스레드를 안전하게 종료하거나, 기본 동작을 수행
+            self._running = False # 예시: 스레드 종료
+
         while self._running:
             perception_data = None
             sensor_data_direct = None
-            processed_something = False
+            processed_input = False # 입력 처리 여부 플래그
 
-            # Prioritize perception data if available
+            # 입력 큐에서 데이터 가져오기 (논블로킹)
             try:
                 perception_data = self.input_queue_perception.get(block=False)
-                processed_something = True
+                processed_input = True
             except queue.Empty:
-                pass # No perception data this cycle
+                pass 
 
             if self.input_queue_sensor:
                 try:
                     sensor_data_direct = self.input_queue_sensor.get(block=False)
-                    processed_something = True
+                    processed_input = True
                 except queue.Empty:
-                    pass # No direct sensor data this cycle
+                    pass
 
-            if processed_something:
-                if selected_strategy_method:
-                    localization_output = selected_strategy_method(perception_data, sensor_data_direct, self.strategy_params)
-                    for key, q in self.output_queues.items():
+            if processed_input:
+                if self.active_strategy_name is None:
+                    logger.info("LocalizationModule: No active strategy selected. Skipping localization.")
+                    # 아무것도 안하거나, 기본 LocalizationInfo를 발행할 수 있음
+                    # 예: self._publish_default_localization_info()
+                elif selected_strategy_method:
+                    localization_output = selected_strategy_method(
+                        perception_data, 
+                        sensor_data_direct, 
+                        self.current_strategy_params # 현재 활성화된 전략의 파라미터 전달
+                    )
+                    for key, q_out in self.output_queues.items(): # 변수명 변경 q -> q_out
                         try:
-                            q.put(localization_output, timeout=0.1)
+                            q_out.put(localization_output, timeout=0.1)
                         except queue.Full:
-                             logging.warning(f"LocalizationModule: Output queue '{key}' is full.")
+                             logging.warning(f"LocalizationModule: Output queue '{key}' is full. Discarding data.")
                 else:
-                    logger.warning(f"LocalizationModule: Strategy '{self.active_strategy_name}' not found in strategy_map.")
-                    # Potentially sleep or handle error
+                    # 이 경우는 시작 시점에 이미 로그가 남았어야 하지만, 안전을 위해 추가
+                    logger.warning(f"LocalizationModule: Strategy '{self.active_strategy_name}' method not found, though it was selected. Skipping.")
+                
+                # 작업 완료 알림
                 if perception_data: self.input_queue_perception.task_done()
                 if sensor_data_direct and self.input_queue_sensor: self.input_queue_sensor.task_done()
-
-            if not processed_something:
-                time.sleep(0.01) # Avoid busy waiting if no data
-            if not self._running and self.input_queue_perception.empty() and (not self.input_queue_sensor or self.input_queue_sensor.empty()):
-                break # Exit condition
+            else:
+                # 입력이 없으면 잠시 대기하여 CPU 사용 방지
+                time.sleep(0.01) 
+            
+            # 루프 종료 조건 (스레드 중지 요청 시)
+            if not self._running:
+                break
 
         logger.info("LocalizationModule: Thread stopped.")
 
