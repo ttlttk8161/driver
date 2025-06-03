@@ -21,6 +21,7 @@ class PathPlannerComponent:
         self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
         self.strategy_map = {
             "simple_waypoint_planner": self._execute_simple_waypoint_planner,
+            "a_star_planner": self._execute_a_star_planner, # 새로운 전략 추가
         }
         logger.info(f"PathPlannerComponent: Initialized. Strategy: {self.active_strategy_name} with params: {self.strategy_params}")
 
@@ -58,6 +59,22 @@ class PathPlannerComponent:
             waypoints.append((start_x + i * waypoint_spacing_m, start_y)) # 직진 웨이포인트
         return PlannedPath(timestamp=current_pose.timestamp, waypoints=waypoints)
 
+    def _execute_a_star_planner(self, current_pose: LocalizationInfo, scene_info: PerceptionOutput,
+                                behavioral_predictions: BehavioralPredictionOutput, params: dict,
+                                image_width: int = 640) -> PlannedPath:
+        # logger.debug(f"AStarPlanner: Planning path with params: {params}")
+        # 이 부분은 실제 A* 알고리즘 구현이 필요합니다.
+        # HDMapInterface (self.hd_map)를 사용하여 그리드 맵을 생성하거나,
+        # scene_info의 drivable_area_mask 등을 활용하여 장애물 정보를 얻고,
+        # current_pose에서 목표 지점(예: DecisionMaker가 설정한 로컬 골)까지 경로를 탐색합니다.
+        # 예시:
+        # grid = self.hd_map.get_local_grid(current_pose.position, extent=50.0, resolution=params.get("grid_resolution_m"))
+        # start_node = grid.get_node_from_world_coords(current_pose.position)
+        # goal_node = ...
+        # path_nodes = a_star_search(grid, start_node, goal_node, heuristic_weight=params.get("heuristic_weight"))
+        logger.info("AStarPlanner: Placeholder - 실제 A* 로직 구현 필요.")
+        return PlannedPath(timestamp=current_pose.timestamp, waypoints=[(current_pose.position[0] + i, current_pose.position[1]) for i in range(1,3)]) # 더미 경로
+
     def plan_path(self, current_pose: LocalizationInfo, scene_info: PerceptionOutput,
                   behavioral_predictions: BehavioralPredictionOutput, image_width: int = 640) -> PlannedPath:
         selected_method = self.strategy_map.get(self.active_strategy_name)
@@ -74,6 +91,7 @@ class DecisionMakerComponent:
         self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
         self.strategy_map = {
             "default_lane_keep": self._execute_default_lane_keep,
+            "rule_based_logic": self._execute_rule_based_logic, # 새로운 전략 추가
         }
         logger.info(f"DecisionMakerComponent: Initialized. Strategy: {self.active_strategy_name} with params: {self.strategy_params}")
 
@@ -92,6 +110,26 @@ class DecisionMakerComponent:
             lead_vehicle_id=None
         )
 
+    def _execute_rule_based_logic(self, current_pose: LocalizationInfo, planned_path: PlannedPath,
+                                  behavioral_predictions: BehavioralPredictionOutput,
+                                  scene_info: PerceptionOutput, params: dict) -> ManeuverDecision:
+        # logger.debug(f"RuleBasedLogic: Making decision with params: {params}")
+        # 예시: scene_info.traffic_signs를 확인하여 정지선이나 신호등에 반응
+        # for sign in scene_info.traffic_signs:
+        #     if sign.type == "stop_sign" and \
+        #        calculate_distance(current_pose.position, sign.position_3d) < params.get("stop_line_distance_threshold_m"):
+        #         return ManeuverDecision(current_pose.timestamp, "STOP_AT_STOP_LINE", 0.0, None)
+        #     elif sign.type == "red_light" and ...:
+        #         return ManeuverDecision(current_pose.timestamp, "STOP_FOR_RED_LIGHT", 0.0, None)
+        
+        logger.info("RuleBasedLogic: Placeholder - 실제 규칙 기반 로직 구현 필요.")
+        return ManeuverDecision( # 기본적으로 차선 유지
+            timestamp=current_pose.timestamp,
+            chosen_maneuver="LANE_KEEP_RULE_BASED",
+            target_speed_kph=self.strategy_params.get("target_speed_kph", 10.0), # default_lane_keep_params와 공유 가능
+            lead_vehicle_id=None
+        )
+
     def make_decision(self, current_pose: LocalizationInfo, planned_path: PlannedPath,
                       behavioral_predictions: BehavioralPredictionOutput, scene_info: PerceptionOutput) -> ManeuverDecision:
         selected_method = self.strategy_map.get(self.active_strategy_name)
@@ -104,41 +142,54 @@ class DecisionMakerComponent:
 class ActionPlannerComponent:
     def __init__(self, config: dict):
         self.config = config
+        self.active_strategy_name = self.config.get("active_strategy", "hsv_lane_following")
+        self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
+
+        self.strategy_map = {
+            "hsv_lane_following": self._execute_hsv_lane_following,
+            "pid_path_tracking": self._execute_pid_path_tracking,
+        }
+
         # steering_balancing.py의 상태 변수들
         self.prev_steering_angle_rad = 0.0 # 이전 조향각 (라디안)
         self.white_lost_count = 0 # 흰색 선 연속 손실 횟수
         self.frame_counter = 0 # 초기 직진 주행을 위한 프레임 카운터
 
-        # steering_balancing.py의 파라미터들 (설정 파일에서 가져옴)
-        # 이 값들은 main_system.py의 load_dummy_config() 내 planning_config -> action_planner 에 정의되어야 함
-        self.initial_straight_frames = self.config.get("initial_straight_frames", 50)
-        self.initial_speed_xycar_units = self.config.get("initial_speed_xycar_units", 60)
+        # 파라미터들은 self.strategy_params 에서 가져와 사용 (아래 _execute_hsv_lane_following 내부에서)
+        logger.info(f"ActionPlannerComponent: Initialized. Strategy: {self.active_strategy_name} with params: {self.strategy_params}")
+
+    def _execute_hsv_lane_following(self, current_pose: LocalizationInfo, decision: ManeuverDecision,
+                                     planned_path: PlannedPath, perception_info: PerceptionOutput,
+                                     image_width: int, params: dict) -> ActionCommand:
+        """
+        HSV 차선 정보를 사용하여 조향각과 속도를 계산하는 전략입니다.
+        (기존 _calculate_hsv_based_steering_and_speed 로직 통합 및 plan_action의 일부 로직 포함)
+        """
+        self.frame_counter += 1
+        target_steering_deg = 0.0
         
-        self.white_steering_gain = self.config.get("white_steering_gain", 0.6) # steering_balancing.py: error * 0.6
-        self.white_max_angle_deg = self.config.get("white_max_angle_deg", 30)   # steering_balancing.py: np.clip(..., -30, 30)
-        self.white_offset_ratio_threshold = self.config.get("white_offset_ratio_threshold", 0.05) # steering_balancing.py: left_ratio - right_ratio > 0.05
-        self.white_offset_angle_deg = self.config.get("white_offset_angle_deg", 15) # steering_balancing.py: angle += 15
+        # 파라미터 로드
+        initial_straight_frames = params.get("initial_straight_frames", 50)
+        initial_speed_xycar_units = params.get("initial_speed_xycar_units", 60)
+        white_steering_gain = params.get("white_steering_gain", 0.6)
+        white_max_angle_deg = params.get("white_max_angle_deg", 30)
+        white_offset_ratio_threshold = params.get("white_offset_ratio_threshold", 0.05)
+        white_offset_angle_deg = params.get("white_offset_angle_deg", 15)
+        yellow_fallback_steering_gain = params.get("yellow_fallback_steering_gain", 0.005)
+        yellow_fallback_max_angle_deg = params.get("yellow_fallback_max_angle_deg", 25)
+        no_line_escape_angle_deg = params.get("no_line_escape_angle_deg", -15)
+        max_steering_delta_deg = params.get("max_steering_delta_deg", 10)
+        speed_config_xycar_units = params.get("speed_tiers_xycar_units", {})
+        xycar_speed_to_mps_factor = params.get("xycar_speed_to_mps_factor", 0.028)
 
-        self.yellow_fallback_steering_gain = self.config.get("yellow_fallback_steering_gain", 0.005) # steering_balancing.py: error * 0.005
-        self.yellow_fallback_max_angle_deg = self.config.get("yellow_fallback_max_angle_deg", 25) # steering_balancing.py: np.clip(..., -25, 25)
+        target_speed_xycar_units = initial_speed_xycar_units # 기본값
+        log_info = "[INIT_DEFAULT_HSV_STRATEGY]"
         
-        self.no_line_escape_angle_deg = self.config.get("no_line_escape_angle_deg", -15) # steering_balancing.py: angle = -15
-        
-        self.max_steering_delta_deg = self.config.get("max_steering_delta_deg", 10) # steering_balancing.py: max_delta = 10
+        # PerceptionModule의 _detect_hsv_lines에서 ROI는 image[roi_y_start:, :] 이므로,
+        # 해당 ROI의 너비는 전체 이미지 너비(image_width)와 동일합니다.
+        image_roi_width_for_hsv = image_width
 
-        # 속도 설정 (Xycar 속도 단위) - steering_balancing.py 기준
-        self.speed_config_xycar_units = self.config.get("speed_tiers_xycar_units", {
-            "straight": 80,       # abs_angle < 5
-            "gentle_turn": 60,    # abs_angle < 10
-            "sharp_turn": 45,     # else
-            "no_line_or_fallback": 30 # "HOLD" or "NO LINE" in steering_balancing.py
-        })
-        # Xycar 속도 단위를 m/s로 변환하는 계수
-        self.xycar_speed_to_mps_factor = self.config.get("xycar_speed_to_mps_factor", 0.028) # 예: 50유닛 = 1.4m/s => 1.4/50 = 0.028
-
-        logger.info(f"ActionPlannerComponent: Initialized with params: {self.config}")
-
-    def _calculate_hsv_based_steering_and_speed(self, perception_info: PerceptionOutput, image_roi_width: int) -> Tuple[float, float, str]:
+        # steering_balancing.py 로직에 따라 HSV 차선 정보를 사용하여 조향각(도)과 속도(Xycar 단위)를 계산합니다.
         """
         steering_balancing.py 로직에 따라 HSV 차선 정보를 사용하여 조향각(도)과 속도(Xycar 단위)를 계산합니다.
         image_roi_width: Perception 모듈에서 HSV 처리에 사용된 ROI의 너비입니다.
@@ -154,15 +205,15 @@ class ActionPlannerComponent:
             self.white_lost_count = 0
             # steering_balancing.py: error = (left_ratio - right_ratio) * 100
             error = (white_metrics.left_ratio - white_metrics.right_ratio) * 100 
-            angle_deg = np.clip(error * self.white_steering_gain, -self.white_max_angle_deg, self.white_max_angle_deg)
+            angle_deg = np.clip(error * white_steering_gain, -white_max_angle_deg, white_max_angle_deg)
 
             # steering_balancing.py: if left_ratio - right_ratio > 0.05: angle += 15
-            if (white_metrics.left_ratio - white_metrics.right_ratio) > self.white_offset_ratio_threshold:
-                angle_deg += self.white_offset_angle_deg
-            elif (white_metrics.right_ratio - white_metrics.left_ratio) > self.white_offset_ratio_threshold:
-                angle_deg -= self.white_offset_angle_deg
+            if (white_metrics.left_ratio - white_metrics.right_ratio) > white_offset_ratio_threshold:
+                angle_deg += white_offset_angle_deg
+            elif (white_metrics.right_ratio - white_metrics.left_ratio) > white_offset_ratio_threshold:
+                angle_deg -= white_offset_angle_deg
             
-            angle_deg = np.clip(angle_deg, -self.white_max_angle_deg, self.white_max_angle_deg) # 오프셋 적용 후 다시 클리핑
+            angle_deg = np.clip(angle_deg, -white_max_angle_deg, white_max_angle_deg) # 오프셋 적용 후 다시 클리핑
             current_log = "WHITE_TRACK"
         else: # 흰색 선 미감지 또는 부족
             self.white_lost_count += 1
@@ -170,61 +221,46 @@ class ActionPlannerComponent:
             # steering_balancing.py: if M['m00'] > 0 (yellow_area_threshold는 Perception에서 처리)
             if yellow_metrics and yellow_metrics.is_detected and yellow_metrics.center_x is not None:
                 # yellow_metrics.center_x는 Perception에서 사용된 ROI 내부의 x좌표.
-                # image_roi_width는 해당 ROI의 너비.
-                roi_center_x = image_roi_width / 2.0
+                # image_roi_width_for_hsv는 해당 ROI의 너비.
+                roi_center_x = image_roi_width_for_hsv / 2.0
                 error = yellow_metrics.center_x - roi_center_x
-                angle_deg = np.clip(error * self.yellow_fallback_steering_gain, -self.yellow_fallback_max_angle_deg, self.yellow_fallback_max_angle_deg)
+                angle_deg = np.clip(error * yellow_fallback_steering_gain, -yellow_fallback_max_angle_deg, yellow_fallback_max_angle_deg)
                 current_log = "YELLOW_FALLBACK"
             else: # 노란색 선도 미감지
-                angle_deg = self.no_line_escape_angle_deg
+                angle_deg = no_line_escape_angle_deg
                 current_log = "NO_LINE_ESCAPE"
         
         # 조향각 변화 제한 (스무딩) - steering_balancing.py: max_delta = 10
         prev_angle_deg = math.degrees(self.prev_steering_angle_rad)
         delta_angle = angle_deg - prev_angle_deg
-        if abs(delta_angle) > self.max_steering_delta_deg:
-            angle_deg = prev_angle_deg + np.sign(delta_angle) * self.max_steering_delta_deg
+        if abs(delta_angle) > max_steering_delta_deg:
+            angle_deg = prev_angle_deg + np.sign(delta_angle) * max_steering_delta_deg
         
         # 속도 결정 (Xycar 단위) - steering_balancing.py 기준
         abs_angle_deg = abs(angle_deg)
         if "NO_LINE" in current_log or "FALLBACK" in current_log: # steering_balancing.py: "HOLD" or "NO LINE"
-            speed_xycar = self.speed_config_xycar_units["no_line_or_fallback"]
+            speed_xycar = speed_config_xycar_units.get("no_line_or_fallback", 20)
         elif abs_angle_deg < 5:
-            speed_xycar = self.speed_config_xycar_units["straight"]
+            speed_xycar = speed_config_xycar_units.get("straight", 45)
         elif abs_angle_deg < 10:
-            speed_xycar = self.speed_config_xycar_units["gentle_turn"]
+            speed_xycar = speed_config_xycar_units.get("gentle_turn", 35)
         else:
-            speed_xycar = self.speed_config_xycar_units["sharp_turn"]
-            
-        return angle_deg, speed_xycar, current_log
-
-    def plan_action(self, current_pose: LocalizationInfo, decision: ManeuverDecision, 
-                      planned_path: PlannedPath, perception_info: PerceptionOutput, 
-                      image_width: int = 640) -> ActionCommand:
+            speed_xycar = speed_config_xycar_units.get("sharp_turn", 25)
         
-        self.frame_counter += 1
-        target_steering_deg = 0.0
-        target_speed_xycar_units = self.initial_speed_xycar_units
-        log_info = "[INIT_DEFAULT]"
+        target_steering_deg = angle_deg
+        target_speed_xycar_units = speed_xycar
+        log_info = current_log
 
-        # PerceptionModule의 _detect_hsv_lines에서 ROI는 image[roi_y_start:, :] 이므로,
-        # 해당 ROI의 너비는 전체 이미지 너비(image_width)와 동일합니다.
-        # 따라서 _calculate_hsv_based_steering_and_speed에 image_width를 image_roi_width로 전달합니다.
-        image_roi_width_for_hsv = image_width 
-
-        if self.frame_counter <= self.initial_straight_frames:
+        # 초기 직진 로직
+        if self.frame_counter <= initial_straight_frames:
             target_steering_deg = 0.0 # 초기 직진
-            target_speed_xycar_units = self.initial_speed_xycar_units
+            target_speed_xycar_units = initial_speed_xycar_units
             log_info = f"[INIT_STRAIGHT] Frame {self.frame_counter}"
-        elif perception_info.white_line_hsv_metrics is not None or perception_info.yellow_line_hsv_metrics is not None:
-            # HSV 메트릭이 있는 경우에만 HSV 기반 로직 사용
-            target_steering_deg, target_speed_xycar_units, log_info = \
-                self._calculate_hsv_based_steering_and_speed(perception_info, image_roi_width_for_hsv)
-        else:
+        elif not (perception_info.white_line_hsv_metrics or perception_info.yellow_line_hsv_metrics):
             # HSV 메트릭이 없는 경우 (예: Perception 모듈에서 아직 준비되지 않음) -> 이전 Canny 로직 또는 기본값 사용
             # 여기서는 steering_balancing.py 통합에 집중하므로, 기본값(직진 또는 이전 값 유지)으로 설정
             target_steering_deg = math.degrees(self.prev_steering_angle_rad) # 이전 각도 유지 시도
-            target_speed_xycar_units = self.speed_config_xycar_units["no_line_or_fallback"] # 안전 속도
+            target_speed_xycar_units = speed_config_xycar_units.get("no_line_or_fallback", 20) # 안전 속도
             log_info = "[NO_HSV_METRICS_FALLBACK]"
 
         # 최종 조향각(도)을 라디안으로 변환
@@ -232,7 +268,7 @@ class ActionPlannerComponent:
         self.prev_steering_angle_rad = target_steering_rad # 다음 프레임을 위해 현재 조향각(라디안) 저장
 
         # Xycar 속도 단위를 m/s로 변환
-        target_velocity_mps = target_speed_xycar_units * self.xycar_speed_to_mps_factor
+        target_velocity_mps = target_speed_xycar_units * xycar_speed_to_mps_factor
 
         # 로그 추가 (필요시) 이 로그를 통해 `[INIT_STRAIGHT]`, `WHITE_TRACK`, `YELLOW_FALLBACK`, `NO_LINE_ESCAPE`, `[NO_HSV_METRICS_FALLBACK]` 중 
         # 어떤 상태인지 파악할 수 있습니다. 만약 계속 `[NO_HSV_METRICS_FALLBACK]`가 출력된다면, HSV 차선 정보가 `ActionPlannerComponent`에 제대로 전달되지 
@@ -244,6 +280,72 @@ class ActionPlannerComponent:
             target_velocity_mps=target_velocity_mps,
             target_steering_angle_rad=target_steering_rad
         )
+
+    def _execute_pid_path_tracking(self, current_pose: LocalizationInfo, decision: ManeuverDecision,
+                                     planned_path: PlannedPath, perception_info: PerceptionOutput,
+                                     image_width: int, params: dict) -> ActionCommand:
+        """
+        PID 제어를 사용하여 계획된 경로를 추종하는 전략입니다.
+        (현재는 플레이스홀더, 실제 PID 로직은 추가 구현 필요)
+        """
+        kp = params.get("kp_steer", 0.5)
+        ki = params.get("ki_steer", 0.01) # 현재 미사용
+        kd = params.get("kd_steer", 0.1) # 현재 미사용
+        log_cte_threshold = params.get("log_cte_threshold", 0.01)
+
+        target_velocity_mps = decision.target_speed_kph / 3.6  # kph to mps
+        target_steering_rad = 0.0
+
+        if not planned_path.waypoints:
+            logger.warning("PIDPathTracking: No waypoints in planned_path. Commanding zero steering.")
+            return ActionCommand(timestamp=current_pose.timestamp,
+                                 target_velocity_mps=target_velocity_mps, # 속도는 유지
+                                 target_steering_angle_rad=0.0)
+
+        # 가장 가까운 웨이포인트 또는 lookahead 지점을 찾아 CTE(Cross-Track Error) 계산 (단순화된 버전)
+        # 실제 구현에서는 차량의 현재 위치/방향과 경로 세그먼트 간의 관계를 정확히 계산해야 함.
+        # 여기서는 첫 번째 웨이포인트와의 y 오차를 CTE로 가정 (매우 단순한 예시)
+        # current_pose.position = (x, y, z)
+        # planned_path.waypoints = [(x1,y1), (x2,y2), ...]
+        
+        # 예시: 차량의 현재 y 위치와 첫 번째 웨이포인트의 y 위치 차이를 CTE로 사용
+        # 이는 차량이 x축을 따라 이동하고 y축 오차를 수정한다고 가정할 때 매우 단순화된 접근 방식입니다.
+        # 실제로는 차량의 방향과 경로의 방향을 모두 고려해야 합니다.
+        vehicle_x, vehicle_y, _ = current_pose.position
+        
+        # 가장 가까운 경로 지점 찾기 (또는 lookahead 지점) - 여기서는 첫번째 웨이포인트를 단순 목표로 가정
+        target_wp_x, target_wp_y = planned_path.waypoints[0]
+
+        # 단순 CTE: y방향 오차 (차량이 x축을 따라 주행한다고 가정)
+        # 이 CTE 계산은 current_pose.orientation_quaternion을 사용하여 차량 좌표계 기준으로 변환해야 더 정확합니다.
+        # 현재 LocalizationModule의 orientation은 더미 값이므로, 글로벌 y 오차를 사용합니다.
+        cross_track_error = target_wp_y - vehicle_y # 목표 y - 현재 y
+
+        if abs(cross_track_error) > log_cte_threshold: # 로깅 임계값 추가
+            logger.debug(f"PIDPathTracking: CTE: {cross_track_error:.3f} (VehicleY: {vehicle_y:.2f}, TargetWP_Y: {target_wp_y:.2f})")
+
+        # P 제어만 사용한 단순 조향각 계산 (실제로는 I, D 항 및 차량 모델 고려 필요)
+        target_steering_rad = -kp * cross_track_error # 오차에 비례하여 반대 방향으로 조향
+
+        # 조향각 제한 (필요시)
+        # max_steer_rad = math.radians(params.get("max_angle_deg_pid", 30)) # 예시
+        # target_steering_rad = np.clip(target_steering_rad, -max_steer_rad, max_steer_rad)
+
+        self.prev_steering_angle_rad = target_steering_rad # 이전 조향각 업데이트 (HSV 전략과 공유하지 않도록 주의)
+
+        return ActionCommand(timestamp=current_pose.timestamp,
+                             target_velocity_mps=target_velocity_mps,
+                             target_steering_angle_rad=target_steering_rad)
+
+    def plan_action(self, current_pose: LocalizationInfo, decision: ManeuverDecision, 
+                      planned_path: PlannedPath, perception_info: PerceptionOutput, 
+                      image_width: int = 640) -> ActionCommand:
+        selected_method = self.strategy_map.get(self.active_strategy_name)
+        if selected_method:
+            return selected_method(current_pose, decision, planned_path, perception_info, image_width, self.strategy_params)
+        else:
+            logger.warning(f"ActionPlannerComponent: Strategy '{self.active_strategy_name}' not found. Returning default action (stop).")
+            return ActionCommand(timestamp=time.time(), target_velocity_mps=0.0, target_steering_angle_rad=0.0)
 
 class PlanningModule:
     def __init__(self, planning_specific_config: dict, # Renamed from 'config'

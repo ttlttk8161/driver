@@ -1,6 +1,7 @@
 import logging
 import queue
 import threading
+import cv2 # For Canny/Hough example
 import time
 from .data_structures import SensorData, PerceptionOutput, WhiteLineHsvMetrics, YellowLineHsvMetrics # 필요한 데이터 구조 import
 
@@ -27,7 +28,8 @@ class PerceptionModule:
         detection_config = self.config.get('detection', {})
         
         self.active_perception_algorithm = detection_config.get('active_perception_algorithm')
-        self.debug_cv_show = detection_config.get('debug_cv_show', False) # cv2.imshow 사용 여부
+        # self.debug_cv_show = detection_config.get('debug_cv_show', False) # 각 알고리즘 파라미터로 이동됨
+        
         
         # 각 알고리즘에 대한 파라미터를 저장합니다.
         self.params = {}
@@ -69,7 +71,10 @@ class PerceptionModule:
             # logger.debug(f"Executing {self.active_perception_algorithm} with params: {algorithm_params}") # 너무 빈번할 수 있음
             # 각 알고리즘 메소드는 (detected_objects, lane_markings, ...) 등을 포함하는 튜플이나 딕셔너리를 반환해야 함
             # 여기서는 플레이스홀더이므로, 기본 PerceptionOutput을 반환하도록 수정
-            algo_output_dict = selected_method(image, algorithm_params) 
+            if image is not None: # 이미지가 있을 때만 알고리즘 실행
+                algo_output_dict = selected_method(image, algorithm_params)
+            else:
+                algo_output_dict = {} # 이미지가 없으면 빈 결과
             
             # 예시: 알고리즘이 딕셔너리 형태로 white_line_hsv_metrics 등을 반환한다고 가정
             return PerceptionOutput(
@@ -84,10 +89,10 @@ class PerceptionModule:
                 yellow_line_hsv_metrics=algo_output_dict.get("yellow_line_hsv_metrics")
             )
         elif self.active_perception_algorithm is None:
-            logger.warning("작업을 수행하기 위한 모듈이 선택되지 않았습니다")
+            logger.warning("PerceptionModule: Active perception algorithm is None. 작업이 수행되지 않습니다.")
         else:
             logger.warning(f"알 수 없거나 지원되지 않는 인식 알고리즘이 선택되었습니다: {self.active_perception_algorithm}")
-            logger.warning("작업을 수행하기 위한 모듈이 선택되지 않았습니다") # 또는 더 구체적인 메시지
+            logger.warning("PerceptionModule: 작업이 수행되지 않습니다.")
         
         # 알고리즘이 선택되지 않았거나, 알 수 없는 경우 기본 빈 PerceptionOutput 반환
         return PerceptionOutput(
@@ -106,22 +111,68 @@ class PerceptionModule:
         Returns:
             dict: 인식 결과를 담은 딕셔너리 (예: {"white_line_hsv_metrics": WhiteLineHsvMetrics(...), ...})
         """
-        # logger.debug(f"Running _execute_hsv_lane_detection with params: {params}")
-        # 여기에 실제 HSV 차선 감지 로직을 구현합니다.
-        # 예: h_min = params.get('h_min', 0)
-        # 실제로는 WhiteLineHsvMetrics, YellowLineHsvMetrics 등을 계산하여 반환해야 합니다.
-        # 예시로 빈 메트릭 반환
+        if image is None: return {}
+        # logger.debug(f"Running _execute_hsv_lane_detection with params: {params}")        
+        # 실제 HSV 차선 감지 로직 (예시, steering_balancing.py의 일부 로직 참고)
+        # ROI 설정
+        roi_y_start = int(image.shape[0] * params.get("roi_y_start_ratio", 0.2))
+        roi = image[roi_y_start:, :]
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        
+        # 흰색 차선
+        lower_white = np.array(params.get("lower_white_hsv", [0,0,180]))
+        upper_white = np.array(params.get("upper_white_hsv", [180,30,255]))
+        white_mask = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # 노란색 차선
+        lower_yellow = np.array(params.get("lower_yellow_hsv", [20,100,100]))
+        upper_yellow = np.array(params.get("upper_yellow_hsv", [30,255,255]))
+        yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+        # WhiteLineHsvMetrics 계산 (간단화된 예시)
+        total_white_pixels = np.sum(white_mask > 0)
+        w_metrics = WhiteLineHsvMetrics(
+            timestamp=time.time(), total_white_pixels=total_white_pixels,
+            left_ratio=0.0, mid_ratio=0.0, right_ratio=0.0, # 실제 계산 필요
+            is_detected=total_white_pixels > params.get("white_pixel_threshold", 300)
+        )
+
+        # YellowLineHsvMetrics 계산 (간단화된 예시)
+        moments_yellow = cv2.moments(yellow_mask)
+        y_area = moments_yellow['m00']
+        y_center_x = int(moments_yellow['m10'] / y_area) if y_area > 0 else None
+        y_metrics = YellowLineHsvMetrics(
+            timestamp=time.time(), area=y_area, center_x=y_center_x,
+            is_detected=y_area > params.get("yellow_area_threshold", 100)
+        )
+
+        if params.get("debug_cv_show", False):
+            cv2.imshow("HSV White Mask", white_mask)
+            cv2.imshow("HSV Yellow Mask", yellow_mask)
+            cv2.waitKey(1)
+
         return {
-            "white_line_hsv_metrics": WhiteLineHsvMetrics(time.time(), 0, 0,0,0, False),
-            "yellow_line_hsv_metrics": YellowLineHsvMetrics(time.time(), 0, None, False)
+            "white_line_hsv_metrics": w_metrics,
+            "yellow_line_hsv_metrics": y_metrics
         }
 
     def _execute_canny_hough_lane_detection(self, image, params) -> dict:
         """
         Canny Hough 차선 감지 알고리즘 예시 플레이스홀더입니다.
         """
+        if image is None: return {}
         # logger.debug(f"Running _execute_canny_hough_lane_detection with params: {params}")
-        # 여기에 실제 Canny + Hough 차선 감지 로직을 구현합니다.
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, params.get("canny_low_threshold", 50), params.get("canny_high_threshold", 150))
+        
+        # ROI 설정 (Hough 변환 전에)
+        # lines = cv2.HoughLinesP(edges, ...) # 실제 Hough 변환 로직
+
+        if params.get("debug_cv_show", False):
+            cv2.imshow("Canny Edges", edges)
+            cv2.waitKey(1)
         return {} # 빈 결과 반환
 
     def _execute_custom_block_example(self, image, params) -> dict:
@@ -129,6 +180,7 @@ class PerceptionModule:
         사용자 정의 알고리즘 블록 예시 플레이스홀더입니다.
         """
         # logger.debug(f"Running _execute_custom_block_example with params: {params}")
+        if image is None: return {}
         # 여기에 실제 사용자 정의 로직을 구현합니다.
         return {} # 빈 결과 반환
 

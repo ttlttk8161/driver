@@ -36,6 +36,7 @@ class LocalizationModule:
 
         self.strategy_map = {
             "placeholder_localization": self._execute_placeholder_localization,
+            "gps_imu_fusion": self._execute_gps_imu_fusion, # 새로운 전략 추가
         }
 
         self._current_localization = LocalizationInfo(
@@ -80,6 +81,35 @@ class LocalizationModule:
             covariance_matrix="Sample Covariance"
         )
         # logger.debug(f"PlaceholderLocalization: New pose: {self._current_localization.position}")
+        return self._current_localization
+
+    def _execute_gps_imu_fusion(self, perception_data: Optional[PerceptionOutput],
+                                sensor_data_direct: Optional[SensorData],
+                                params: dict) -> LocalizationInfo:
+        timestamp = time.time()
+        current_pos = list(self._current_localization.position)
+        current_orient = list(self._current_localization.orientation_quaternion)
+        current_vel = list(self._current_localization.velocity_vector)
+
+        if sensor_data_direct and sensor_data_direct.gnss_data and sensor_data_direct.imu_data:
+            timestamp = sensor_data_direct.timestamp
+            # 매우 단순화된 가중 평균 예시
+            # 실제로는 EKF(Extended Kalman Filter) 등 사용
+            gps_pos = sensor_data_direct.gnss_data.get("position", current_pos) # (x,y,z)
+            # imu_orient = sensor_data_direct.imu_data.get("orientation_quaternion", current_orient) # (w,x,y,z)
+            
+            gps_weight = params.get("gps_weight", 0.7)
+            # prev_weight = 1.0 - gps_weight # 이전 상태 가중치
+            
+            # current_pos[0] = gps_weight * gps_pos[0] + prev_weight * current_pos[0]
+            # current_pos[1] = gps_weight * gps_pos[1] + prev_weight * current_pos[1]
+            # ... (더 정교한 융합 로직 필요)
+            logger.debug(f"GPSIMUFusion: Using GNSS data {gps_pos} (Placeholder fusion)")
+            # 여기서는 GPS 위치를 그대로 사용한다고 가정 (단순화)
+            current_pos = gps_pos
+
+        # 이 플레이스홀더는 실제 융합 로직을 포함하지 않음
+        self._current_localization = LocalizationInfo(timestamp, tuple(current_pos), tuple(current_orient), tuple(current_vel), "GPS/IMU Fusion Cov")
         return self._current_localization
 
     def run(self):

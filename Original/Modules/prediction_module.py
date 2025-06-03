@@ -25,6 +25,7 @@ class PredictionModule:
 
         self.strategy_map = {
             "simple_extrapolation": self._execute_simple_extrapolation,
+            "kalman_cv_prediction": self._execute_kalman_cv_prediction, # 새로운 전략 추가
         }
 
         self._latest_localization: LocalizationInfo = None
@@ -67,6 +68,31 @@ class PredictionModule:
             timestamp=perception_data.timestamp,
             predicted_trajectories=predicted_trajectories
         )
+
+    def _execute_kalman_cv_prediction(self, perception_data: PerceptionOutput,
+                                        ego_localization: LocalizationInfo,
+                                        params: dict) -> BehavioralPredictionOutput:
+        # logger.debug(f"KalmanCVPrediction: Predicting behavior with params: {params}")
+        predicted_trajectories: List[PredictedTrajectory] = []
+        
+        # 이 부분은 실제 Kalman Filter 구현이 필요합니다.
+        # 각 detected_object에 대해 Kalman Filter를 초기화/업데이트하고 예측을 수행합니다.
+        # 예시:
+        # for obj in perception_data.detected_objects:
+        #     if not hasattr(self, f"kf_obj_{obj.id}"):
+        #         # self.kf_obj_{obj.id} = KalmanFilter(dim_x=4, dim_z=2) # 상태: x, y, vx, vy
+        #         # ... KF 초기화 ...
+        #         pass
+        #     # kf = getattr(self, f"kf_obj_{obj.id}")
+        #     # kf.predict()
+        #     # kf.update(measurement) # measurement: obj.position_3d[:2]
+        #     # path_points = []
+        #     # for _ in range(params.get("prediction_steps", 5)):
+        #     #     # ... kf.x에서 예측된 위치 추출 ...
+        #     #     path_points.append(...)
+        #     # predicted_trajectories.append(PredictedTrajectory(obj.id, 0.7, path_points))
+        logger.info("KalmanCVPrediction: Placeholder - 실제 Kalman Filter 로직 구현 필요.")
+        return BehavioralPredictionOutput(timestamp=perception_data.timestamp, predicted_trajectories=[])
 
     def run(self):
         logger.info(f"PredictionModule: Thread started. Strategy: {self.active_strategy_name}")

@@ -67,6 +67,7 @@ class ControlModule:
 
         self.law_map = {
             "basic_pid": self._execute_basic_pid_control,
+            "vehicle_model_pid": self._execute_vehicle_model_pid, # 새로운 제어 법칙 추가
         }
         # vehicle_interface_config에 motor_publisher와 motor_msg_template이 주입되어야 함
         self.vehicle_interface = VehicleInterface(
@@ -123,6 +124,30 @@ class ControlModule:
             throttle_command=throttle_command,
             brake_command=brake_command
         )
+
+    def _execute_vehicle_model_pid(self, action: ActionCommand, params: dict) -> ControlActuatorCommands:
+        # logger.debug(f"VehicleModelPID: Translating action with params: {params}")
+        # 이 부분은 실제 차량 모델을 고려한 PID 제어 로직이 필요합니다.
+        # 예: Longitudinal PID (속도 제어) + Lateral PID (조향 제어 - Stanley, Pure Pursuit 등)
+        
+        # Longitudinal PID (단순 P 제어 예시)
+        # current_speed_mps = ... # 차량으로부터 피드백 필요 (현재는 없음)
+        # speed_error = action.target_velocity_mps - current_speed_mps
+        # throttle_command = params.get("kp_speed", 0.8) * speed_error
+        # throttle_command = np.clip(throttle_command, 0.0, 1.0)
+        # brake_command = 0.0 if throttle_command > 0 else 0.1 # 단순화
+
+        # Lateral PID (단순 P 제어 예시 - 목표 조향각 직접 사용)
+        # steering_command_rad = action.target_steering_angle_rad # 목표 조향각
+        # 실제로는 CTE(Cross-Track Error)와 Yaw Error를 사용한 제어
+        # cte = ... # Localization과 Path 정보로부터 계산
+        # yaw_error = ...
+        # steering_command_rad = params.get("kp_steer_lat") * cte + params.get("kp_steer_yaw") * yaw_error
+        
+        logger.info("VehicleModelPID: Placeholder - 실제 차량 모델 기반 PID 로직 구현 필요.")
+        # 기본 basic_pid와 유사하게 동작하도록 임시 설정
+        return self._execute_basic_pid_control(action, self.config.get("basic_pid_params", {}))
+
 
     def run(self):
         logger.info(f"ControlModule: Thread started. Control Law: {self.active_law_name}")
