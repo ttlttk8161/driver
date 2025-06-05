@@ -1,80 +1,85 @@
+# 모듈 import
 import threading
 import queue
 import time
-import os # For creating dummy config if needed
+import os
 import logging
 
-# Import module classes
-from .sensor_input_module import SensorInputManager
+# 시스템 모듈 import
+from .optimized_sensor_input_module import OptimizedSensorInputManager
 from .perception_module import PerceptionModule
-from .localization_module import LocalizationModule, HDMapInterface # HDMapInterface is defined in localization_module
+from .localization_module import LocalizationModule
 from .prediction_module import PredictionModule
 from .planning_module import PlanningModule
 from .control_module import ControlModule
-from .data_structures import SensorData # And others if directly used here
+from .optimized_data_structures import (
+    OptimizedSensorInput, PriorityQueue, RingBufferQueue, 
+    TimestampSynchronizer, DataPriority
+)
+from .performance_monitor import PerformanceMonitor
+from .adaptive_optimization import AdaptiveOptimizer
 
-# Dummy config function
+# 기본 설정 함수
 def load_dummy_config() -> dict:
-    # PerceptionModule에서 사용할 기본 알고리즘 설정.
-
-    # --- Perception Module Parameters ---
+    # Perception 모듈 파라미터
     hsv_lane_detection_params = {
-        "debug_cv_show": True, # HSV 알고리즘 전용 디버그 뷰 활성화
-        "roi_y_start_ratio": 0.2, # HSV ROI용 (기존 0.8에서 수정)
+        "debug_cv_show": True,
+        "roi_y_start_ratio": 0.2,
         "lower_white_hsv": [0, 0, 180],
         "upper_white_hsv": [180, 30, 255],
         "lower_yellow_hsv": [20, 100, 100],
         "upper_yellow_hsv": [30, 255, 255],
-        "white_pixel_threshold": 300, # 흰색 픽셀 감지 임계값 (주로 HSV 결과에 사용)
-        "yellow_area_threshold": 100, # 노란색 영역 감지 임계값 (주로 HSV 결과에 사용)
+        "white_pixel_threshold": 300,
+        "yellow_area_threshold": 100,
     }
     canny_hough_lane_detection_params = {
-        "debug_cv_show": False, # Canny/Hough 알고리즘 전용 디버그 뷰 비활성화
+        "debug_cv_show": False,
         "canny_low_threshold": 50,
         "canny_high_threshold": 150,
         "hough_threshold": 20,
         "hough_min_line_length": 10,
         "hough_max_line_gap": 5,
-        "roi_y_start_ratio": 0.5, # Canny/Hough용 ROI
+        "roi_y_start_ratio": 0.5,
     }
     custom_block_example_params = {
-        "debug_cv_show": False, # 사용자 정의 알고리즘 디버그 뷰 비활성화
+        "debug_cv_show": False,
         "custom_param_1": 123,
         "custom_param_2": "test_value"
     }
 
-    # --- Localization Module Parameters ---
+    # Localization 모듈 파라미터
     placeholder_localization_params = {
         "update_rate_hz": 10,
         "sim_step_x": 0.05
     }
-    gps_imu_fusion_params = { # 새로운 Localization 전략 파라미터
+    gps_imu_fusion_params = {
         "gps_weight": 0.7,
         "imu_weight": 0.3,
-        "initial_covariance": [0.1, 0.1, 0.1]
+        "initial_covariance": [0.1, 0.1, 0.1],
+        "sim_step_x_fallback": 0.05,
+        "update_rate_hz_fallback": 10
     }
 
-    # --- Prediction Module Parameters ---
+    # Prediction 모듈 파라미터
     simple_extrapolation_params = {
         "prediction_horizon_sec": 2.0,
         "time_step_sec": 0.5
     }
-    kalman_cv_prediction_params = { # 새로운 Prediction 전략 파라미터
-        "process_noise_covariance": 0.01,
-        "measurement_noise_covariance": 0.1,
-        "prediction_steps": 5
+    kalman_cv_prediction_params = {
+        "process_noise_std_dev_acc": 0.5,
+        "measurement_noise_std_dev_pos": 0.1,
+        "prediction_steps": 5,
+        "prediction_time_step_sec": 0.2,
+        "initial_velocity_if_none": 0.1
     }
 
-    # --- Planning Module Parameters ---
-    # Path Planner
+    # Planning 모듈 파라미터
     simple_waypoint_planner_params = {"num_waypoints": 5, "waypoint_spacing_m": 1.0}
-    a_star_planner_params = { # 새로운 PathPlanner 전략 파라미터
+    a_star_planner_params = {
         "heuristic_weight": 1.0,
         "grid_resolution_m": 0.5
     }
-    # Decision Maker
-    default_lane_keep_params = {"target_speed_kph": 10.0} # 기본 주행 속도
-    # Action Planner
+    default_lane_keep_params = {"target_speed_kph": 10.0}
     hsv_lane_following_params = {
         "initial_straight_frames": 50,
         "initial_speed_xycar_units": 60,
@@ -99,34 +104,33 @@ def load_dummy_config() -> dict:
         "target_lookahead_distance_m": 2.0,
         "log_cte_threshold": 0.01
     }
-    rule_based_logic_params = { # 새로운 DecisionMaker 전략 파라미터
+    rule_based_logic_params = {
         "stop_line_distance_threshold_m": 2.0,
         "traffic_light_response_time_sec": 1.0
     }
 
-    # --- Control Module Parameters ---
+    # Control 모듈 파라미터
     basic_pid_control_params = {
-        "max_control_speed_mps": 1.4, # 50 (Xycar units) * 0.028 (factor) = 1.4 m/s
+        "max_control_speed_mps": 1.4,
         "log_velocity_threshold_mps": 0.05,
         "log_angle_threshold_rad": 0.005
     }
-    vehicle_model_pid_params = { # 새로운 Control 전략 파라미터
+    vehicle_model_pid_params = {
         "kp_speed": 0.8, "ki_speed": 0.05, "kd_speed": 0.1,
-        "kp_steer_lat": 0.7, "kd_steer_lat": 0.05, # Lateral error based
-        "kp_steer_yaw": 0.5, "kd_steer_yaw": 0.02  # Yaw error based
+        "kp_steer_lat": 0.7, "kd_steer_lat": 0.05,
+        "kp_steer_yaw": 0.5, "kd_steer_yaw": 0.02,
+        "max_throttle_speed_mps": 1.5
     }
 
     return {
-        "image_width": 640, # 카메라 이미지 너비 (PlanningModule에서 사용)
-        "image_height": 480, # 카메라 이미지 높이
+        "image_width": 640,
+        "image_height": 480,
         "sensor_input_config": {
-            "publish_rate_hz": 20 # 센서 데이터 발행 빈도
+            "publish_rate_hz": 20
         },
         "perception_config": {
             "detection": {
-                # track_drive.py에서 이 값을 오버라이드할 수 있습니다.
-                # None으로 설정 시 PerceptionModule은 "작업을 수행하기 위한 모듈이 선택되지 않았습니다" 메시지를 출력합니다.
-                "active_perception_algorithm": "canny_hough_lane_detection", # 기본 인식 알고리즘
+                "active_perception_algorithm": "hsv_lane_detection",
                 "hsv_lane_detection_params": hsv_lane_detection_params,
                 "canny_hough_lane_detection_params": canny_hough_lane_detection_params,
                 "custom_block_example_params": custom_block_example_params,
@@ -134,84 +138,132 @@ def load_dummy_config() -> dict:
             "scene_understanding": {}, "tracking": {}, "perception_prediction": {}
             },
         "localization_config": {
-            "active_localization_strategy": "gps_imu_fusion", # 기본 측위 전략 변경
+            "active_localization_strategy": "gps_imu_fusion",
             "placeholder_localization_params": placeholder_localization_params,
             "gps_imu_fusion_params": gps_imu_fusion_params,
         },
         "prediction_config": {
-            "active_prediction_strategy": "kalman_cv_prediction", # 기본 예측 전략 변경
+            "active_prediction_strategy": "kalman_cv_prediction",
             "simple_extrapolation_params": simple_extrapolation_params,
             "kalman_cv_prediction_params": kalman_cv_prediction_params,
         },
         "planning_config": {
             "path_planner": {
-                "active_strategy": "a_star_planner", # 기본 경로 계획 전략 변경
+                "active_strategy": "a_star_planner",
                 "simple_waypoint_planner_params": simple_waypoint_planner_params,
                 "a_star_planner_params": a_star_planner_params,
             },
             "decision_maker": {
-                "active_strategy": "rule_based_logic", # 기본 의사 결정 전략 변경
+                "active_strategy": "rule_based_logic",
                 "default_lane_keep_params": default_lane_keep_params,
                 "rule_based_logic_params": rule_based_logic_params,
             },
             "action_planner": {
-                "active_strategy": "pid_path_tracking", # 기본 행동 계획 전략 변경
+                "active_strategy": "hsv_lane_following",
                 "hsv_lane_following_params": hsv_lane_following_params,
                 "pid_path_tracking_params": pid_path_tracking_params
             },
         },
         "control_config": {
-            "active_control_law": "vehicle_model_pid", # 기본 제어 법칙 변경
+            "active_control_law": "basic_pid",
             "basic_pid_params": basic_pid_control_params,
             "vehicle_model_pid_params": vehicle_model_pid_params,
         },
         "vehicle_interface_config": { 
-            "max_xycar_speed": 50.0, # Xycar의 최대 속도 유닛
+            "max_xycar_speed": 50.0,
             "min_xycar_speed": 0.0
-            # ros_motor_publisher 등은 track_drive.py에서 채워짐
         }
     }
 
 class MainSystem:
     def __init__(self, config: dict):
         self.config = config
+        self._initialize_performance_monitor()
         self._initialize_queues()
         self._initialize_modules()
         self._threads = []
-        logging.info("MainSystem: Initialized.")
+        logging.info("MainSystem: Initialized with performance monitoring.")
+
+    def _initialize_performance_monitor(self):
+        """성능 모니터 초기화"""
+        monitor_config = self.config.get("performance_monitor_config", {
+            "enable_monitoring": True,
+            "monitoring_interval_sec": 1.0,
+            "alert_thresholds": {
+                "cpu_percent_high": 75.0,
+                "memory_percent_high": 80.0,
+                "queue_size_high": 8,
+                "fps_low": 15.0,
+                "latency_high_ms": 80.0
+            }
+        })
+        
+        self.performance_monitor = PerformanceMonitor(monitor_config)
+        logging.info("MainSystem: Performance monitor initialized")
+        
+        # 적응적 최적화 시스템 초기화
+        optimizer_config = self.config.get("adaptive_optimizer_config", {
+            "optimization_interval_sec": 5.0,
+            "cpu_high_threshold": 85.0,
+            "memory_high_threshold": 80.0,
+            "queue_full_threshold": 0.8,
+            "latency_high_threshold_ms": 50.0
+        })
+        self.adaptive_optimizer = AdaptiveOptimizer(self.performance_monitor, optimizer_config)
+        logging.info("MainSystem: Adaptive optimizer initialized")
 
     def _initialize_queues(self):
-        logging.info("MainSystem: Initializing queues...")
-        self.sensor_to_perception_queue = queue.Queue(maxsize=10)
+        logging.info("MainSystem: Initializing optimized queues...")
+        
+        # 센서 데이터용 고속 링 버퍼 큐
+        self.sensor_to_perception_queue = RingBufferQueue(maxsize=8)
 
-        # Perception outputs to multiple modules
-        self.perception_to_localization_queue = queue.Queue(maxsize=5)
-        self.perception_to_prediction_queue = queue.Queue(maxsize=5)
-        self.perception_to_planning_queue = queue.Queue(maxsize=5) # For direct scene info to planning
+        # 인지 결과용 우선순위 큐
+        self.perception_to_localization_queue = PriorityQueue(maxsize=5, enable_metrics=True)
+        self.perception_to_prediction_queue = PriorityQueue(maxsize=5, enable_metrics=True)
+        self.perception_to_planning_queue = PriorityQueue(maxsize=5, enable_metrics=True)
 
-        # Localization outputs to multiple modules
-        self.localization_to_prediction_queue = queue.Queue(maxsize=5)
-        self.localization_to_planning_queue = queue.Queue(maxsize=5)
+        # 위치 정보용 우선순위 큐
+        self.localization_to_prediction_queue = PriorityQueue(maxsize=5, enable_metrics=True)
+        self.localization_to_planning_queue = PriorityQueue(maxsize=5, enable_metrics=True)
 
-        self.prediction_to_planning_queue = queue.Queue(maxsize=5)
-        self.planning_to_control_queue = queue.Queue(maxsize=5)
+        # 예측 및 제어 명령용 큐
+        self.prediction_to_planning_queue = PriorityQueue(maxsize=3, enable_metrics=True)
+        self.planning_to_control_queue = PriorityQueue(maxsize=2, enable_metrics=True)
 
-        # Optional direct sensor input to localization (e.g., GNSS/IMU if not through perception)
-        self.direct_sensor_to_localization_queue = queue.Queue(maxsize=10) # Example
+        # 직접 센서 입력용
+        self.direct_sensor_to_localization_queue = RingBufferQueue(maxsize=10)
+        
+        # 타임스탬프 동기화 관리자
+        self.timestamp_synchronizer = TimestampSynchronizer(tolerance_ms=50.0)
+        
+        logging.info("MainSystem: Optimized queues initialized successfully")
 
     def _initialize_modules(self):
         logging.info("MainSystem: Initializing modules...")
-        # 1. Sensor Input
-        # track_drive.py에서 CvBridge 객체를 config 통해 전달받는다고 가정
+        
+        # 1. 최적화된 센서 입력 관리자
         ros_bridge_instance = self.config.get("ros_bridge")
-        self.sensor_manager = SensorInputManager(
-            self.config.get("sensor_input_config", {}),
-            self.sensor_to_perception_queue, # Sensor manager directly outputs to perception
+        if ros_bridge_instance is None:
+            from cv_bridge import CvBridge
+            ros_bridge_instance = CvBridge()
+        sensor_config = self.config.get("sensor_input_config", {})
+        
+        # 성능 모니터링 설정 추가
+        sensor_config.update({
+            "enable_performance_monitoring": True,
+            "memory_pool_size": 15,
+            "sync_tolerance_ms": 30.0,
+            "publish_rate_hz": 25
+        })
+        
+        self.sensor_manager = OptimizedSensorInputManager(
+            sensor_config,
+            self.sensor_to_perception_queue,
             ros_bridge=ros_bridge_instance
-            # If direct GNSS/IMU to localization: self.direct_sensor_to_localization_queue (needs sensor manager logic change)
         )
 
-        # 2. Perception Module
+        # 2. 인지 모듈
         perception_output_queues = {
             "localization": self.perception_to_localization_queue,
             "prediction": self.perception_to_prediction_queue,
@@ -230,13 +282,12 @@ class MainSystem:
         }
         self.localization_module = LocalizationModule(
             self.config.get("localization_config", {}),
-            self.config.get("hd_map_path", "dummy_map.hd"),
             input_queue_perception=self.perception_to_localization_queue,
-            input_queue_sensor=None, # Assuming GNSS/IMU goes through perception or is handled internally by perception for features
+            input_queue_sensor=None,
             output_queues=localization_output_queues
         )
 
-        # 4. Prediction Module (Behavioral)
+        # 4. Prediction Module
         self.prediction_module = PredictionModule(
             self.config.get("prediction_config", {}),
             input_queue_perception=self.perception_to_prediction_queue,
@@ -244,19 +295,17 @@ class MainSystem:
             output_queue=self.prediction_to_planning_queue
         )
 
-        # Planning Module
+        # 5. Planning Module
         planning_input_queues = {"localization": self.localization_to_planning_queue, "prediction": self.prediction_to_planning_queue, "perception": self.perception_to_planning_queue}
         self.planning_module = PlanningModule(
             planning_specific_config=self.config.get("planning_config", {}),
-            hd_map_path=self.config.get("hd_map_path", "dummy_map.hd"),
-            overall_system_config=self.config,  # Pass the main system's entire config
+            overall_system_config=self.config,
             input_queues=planning_input_queues,
             output_queue_control=self.planning_to_control_queue
          )
  
         # 6. Control Module
-        # track_drive.py에서 motor 퍼블리셔와 메시지 템플릿을 config 통해 전달받는다고 가정
-        vehicle_if_config = self.config.get("vehicle_interface_config", {}).copy() # 복사해서 사용
+        vehicle_if_config = self.config.get("vehicle_interface_config", {}).copy()
         vehicle_if_config["ros_motor_publisher"] = self.config.get("ros_motor_publisher")
         vehicle_if_config["ros_motor_msg_template"] = self.config.get("ros_motor_msg_template")
         self.control_module = ControlModule(
@@ -266,31 +315,117 @@ class MainSystem:
         )
 
         self.modules = [
-            self.sensor_manager, # Sensor manager has start/stop methods, not run in a list of threads here
+            self.sensor_manager,
             self.perception_module,
             self.localization_module,
             self.prediction_module,
             self.planning_module,
             self.control_module
         ]
+        
+        # 성능 모니터에 모듈들과 큐들을 등록
+        self._register_with_performance_monitor()
+        
+        # 적응적 최적화 타이머 설정
+        self._optimization_interval = 5.0
+        self._last_optimization_time = time.time()
+        self._optimization_enabled = True
 
 
     def start(self):
+        print("MainSystem: Starting all modules...", flush=True)
         logging.info("MainSystem: Starting all modules...")
-        # Start sensor manager separately as it might manage its own thread(s) differently
+        
+        # 성능 모니터링 시작
+        print("MainSystem: Starting performance monitoring...", flush=True)
+        self.performance_monitor.start_monitoring()
+        print("MainSystem: Performance monitoring started", flush=True)
+        logging.info("MainSystem: Performance monitoring started")
+        
+        # 적응적 최적화 시작
+        print("MainSystem: Starting adaptive optimization...", flush=True)
+        self.adaptive_optimizer.start()
+        print("MainSystem: Adaptive optimization started", flush=True)
+        logging.info("MainSystem: Adaptive optimization started")
+        
+        # 센서 관리자 시작
+        print("MainSystem: Starting sensor manager...", flush=True)
         self.sensor_manager.start_sensors()
-        time.sleep(0.5) # Give sensors a moment
+        print("MainSystem: Sensor manager started, waiting 0.5 seconds...", flush=True)
+        time.sleep(0.5)
 
-        # Start other modules
+        # 다른 모듈들 시작
+        print("MainSystem: Starting individual modules...", flush=True)
         for module in self.modules:
-            if hasattr(module, 'start') and module != self.sensor_manager : # sensor_manager already started
-                module.start()
-                self._threads.append(module._thread) # Assuming module._thread is the worker thread
+            if hasattr(module, 'start') and module != self.sensor_manager:
+                module_name = module.__class__.__name__
+                print(f"MainSystem: About to call {module_name}.start()", flush=True)
+                try:
+                    module.start()
+                    print(f"MainSystem: {module_name}.start() returned. _thread: {getattr(module, '_thread', None)}", flush=True)
+                except Exception as e:
+                    print(f"MainSystem: Exception during {module_name}.start(): {e}", flush=True)
+                if hasattr(module, '_thread'):
+                    self._threads.append(module._thread)
+                print(f"MainSystem: {module_name} started successfully", flush=True)
+        print("MainSystem: All modules started.", flush=True)
         logging.info("MainSystem: All modules started.")
+
+    def _register_with_performance_monitor(self):
+        """성능 모니터에 모듈들과 큐들을 등록"""
+        logging.info("MainSystem: Registering modules and queues with performance monitor...")
+        
+        # 큐들 등록
+        queue_info = {
+            "sensor_to_perception": self.sensor_to_perception_queue,
+            "perception_to_localization": self.perception_to_localization_queue,
+            "perception_to_prediction": self.perception_to_prediction_queue,
+            "perception_to_planning": self.perception_to_planning_queue,
+            "localization_to_prediction": self.localization_to_prediction_queue,
+            "localization_to_planning": self.localization_to_planning_queue,
+            "prediction_to_planning": self.prediction_to_planning_queue,
+            "planning_to_control": self.planning_to_control_queue,
+            "direct_sensor_to_localization": self.direct_sensor_to_localization_queue
+        }
+        
+        for queue_name, queue_obj in queue_info.items():
+            self.performance_monitor.register_queue(queue_name, queue_obj)
+            self.adaptive_optimizer.register_queue(queue_name, queue_obj)
+        
+        # 모듈들 등록
+        module_info = {
+            "sensor_manager": self.sensor_manager,
+            "perception_module": self.perception_module,
+            "localization_module": self.localization_module,
+            "prediction_module": self.prediction_module,
+            "planning_module": self.planning_module,
+            "control_module": self.control_module
+        }
+        
+        for module_name, module_obj in module_info.items():
+            self.performance_monitor.register_module(module_name, module_obj)
+            self.adaptive_optimizer.register_module(module_name, module_obj)
+        
+        logging.info("MainSystem: All components registered with performance monitor and adaptive optimizer")
+        
+    def get_performance_report(self):
+        """현재 성능 보고서를 반환"""
+        return self.performance_monitor.generate_report()
 
 
     def stop(self):
         logging.info("MainSystem: Stopping all modules...")
+
+        # 성능 모니터링 및 적응적 최적화 정지
+        if hasattr(self, 'adaptive_optimizer'):
+            self.adaptive_optimizer.stop()
+            optimization_report = self.adaptive_optimizer.get_optimization_report()
+            logging.info(f"MainSystem: Adaptive Optimizer Report:\n{optimization_report}")
+            
+        if hasattr(self, 'performance_monitor'):
+            self.performance_monitor.stop_monitoring()
+            final_report = self.performance_monitor.generate_report()
+            logging.info(f"MainSystem: Final Performance Report:\n{final_report}")
 
         # Stop modules in reverse order of data flow or based on dependencies
         # Control first, then planning etc.
@@ -312,21 +447,80 @@ class MainSystem:
 
         logging.info("MainSystem: All modules stopped.")
 
+    def _adaptive_optimization(self):
+        """적응적 성능 최적화 실행"""
+        if not self._optimization_enabled:
+            return
+            
+        current_time = time.time()
+        if current_time - self._last_optimization_time < self._optimization_interval:
+            return
+            
+        logging.info("MainSystem: Running adaptive optimization...")
+        
+        try:
+            # 성능 메트릭 수집
+            metrics = self.performance_monitor.get_current_metrics()
+            
+            # 큐 사용률 기반 크기 조정
+            for queue_name, queue_obj in [
+                ("sensor_to_perception", self.sensor_to_perception_queue),
+                ("perception_to_localization", self.perception_to_localization_queue),
+                ("perception_to_prediction", self.perception_to_prediction_queue),
+                ("perception_to_planning", self.perception_to_planning_queue),
+                ("planning_to_control", self.planning_to_control_queue)
+            ]:
+                if hasattr(queue_obj, 'utilization'):
+                    utilization = queue_obj.utilization
+                    
+                    # 높은 사용률(>80%)이면 큐 크기 확장
+                    if utilization > 0.8 and hasattr(queue_obj, 'resize'):
+                        new_size = min(queue_obj.maxsize * 2, 50)  # 최대 50으로 제한
+                        logging.info(f"MainSystem: Expanding {queue_name} queue size to {new_size}")
+                        queue_obj.resize(new_size)
+                    
+                    # 낮은 사용률(<20%)이면 큐 크기 축소
+                    elif utilization < 0.2 and hasattr(queue_obj, 'resize'):
+                        new_size = max(queue_obj.maxsize // 2, 2)  # 최소 2로 제한
+                        logging.info(f"MainSystem: Reducing {queue_name} queue size to {new_size}")
+                        queue_obj.resize(new_size)
+            
+            # 메모리 사용량 기반 최적화
+            if 'memory_usage_mb' in metrics and metrics['memory_usage_mb'] > 500:
+                logging.warning(f"MainSystem: High memory usage detected: {metrics['memory_usage_mb']:.1f}MB")
+                # 메모리 정리 트리거
+                if hasattr(self.sensor_manager, 'cleanup_memory'):
+                    self.sensor_manager.cleanup_memory()
+            
+            # CPU 사용률 기반 처리 속도 조정
+            if 'cpu_usage_percent' in metrics and metrics['cpu_usage_percent'] > 85:
+                logging.warning(f"MainSystem: High CPU usage detected: {metrics['cpu_usage_percent']:.1f}%")
+                # 센서 데이터 발행 빈도 감소
+                if hasattr(self.sensor_manager, 'reduce_publish_rate'):
+                    self.sensor_manager.reduce_publish_rate()
+            
+            self._last_optimization_time = current_time
+            logging.info("MainSystem: Adaptive optimization completed")
+            
+        except Exception as e:
+            logging.error(f"MainSystem: Error during adaptive optimization: {e}")
+    
+    def enable_adaptive_optimization(self, enabled: bool):
+        """적응적 최적화 활성화/비활성화"""
+        self._optimization_enabled = enabled
+        logging.info(f"MainSystem: Adaptive optimization {'enabled' if enabled else 'disabled'}")
+    
+    def set_optimization_interval(self, interval_seconds: float):
+        """최적화 실행 간격 설정"""
+        self._optimization_interval = max(1.0, interval_seconds)
+        logging.info(f"MainSystem: Optimization interval set to {self._optimization_interval}s")
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logger.info("=============== Autonomous Driving System Simulation ===============")
-    # Create a dummy HD map file if it doesn't exist for HDMapInterface to load
-    dummy_map_path = "path/to/dummy_map.hd"
-    os.makedirs(os.path.dirname(dummy_map_path), exist_ok=True)
-    if not os.path.exists(dummy_map_path):
-        with open(dummy_map_path, 'w') as f:
-            f.write("This is a dummy HD map file.\n")
-        logger.info(f"Created dummy HD map file: {dummy_map_path}")
-
 
     config = load_dummy_config()
-    config["hd_map_path"] = dummy_map_path # Ensure config uses the created path
 
     system = MainSystem(config=config)
 

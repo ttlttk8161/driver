@@ -1,56 +1,56 @@
+# 계획 모듈
 import queue
+import _queue
 import threading
 import time
 from typing import Dict, Optional, Tuple
-from .data_structures import (
-    LocalizationInfo, BehavioralPredictionOutput, PerceptionOutput,
+from .optimized_data_structures import (
+    LocalizationInfo, BehavioralPredictionOutput,
     PlannedPath, ManeuverDecision, ActionCommand
 )
-from .localization_module import HDMapInterface # HDMapInterface from localization_module
+from .optimized_data_structures import DataPriority, PriorityQueueItem, OptimizedPerceptionOutput
+from .performance_monitor import performance_timing, PerformanceTracker
 import numpy as np
-import math # math 모듈 추가
+import math
+import rospy
 import logging
 
 logger = logging.getLogger(__name__)
 
+# 성능 추적기 초기화
+performance_tracker = PerformanceTracker("PlanningModule")
+
 class PathPlannerComponent:
-    def __init__(self, config: dict, hd_map_interface: HDMapInterface):
+    def __init__(self, config: dict):
         self.config = config
-        self.hd_map = hd_map_interface
         self.active_strategy_name = self.config.get("active_strategy", "simple_waypoint_planner")
         self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
         self.strategy_map = {
             "simple_waypoint_planner": self._execute_simple_waypoint_planner,
-            "a_star_planner": self._execute_a_star_planner, # 새로운 전략 추가
+            "a_star_planner": self._execute_a_star_planner,
         }
         logger.info(f"PathPlannerComponent: Initialized. Strategy: {self.active_strategy_name} with params: {self.strategy_params}")
 
-    def _execute_simple_waypoint_planner(self, current_pose: LocalizationInfo, scene_info: PerceptionOutput,
+    def _execute_simple_waypoint_planner(self, current_pose: LocalizationInfo, scene_info: OptimizedPerceptionOutput,
                                          behavioral_predictions: BehavioralPredictionOutput, params: dict, 
                                          image_width: int = 640) -> PlannedPath:
-        # logger.debug(f"SimpleWaypointPlanner: Planning path from {current_pose.position}")
         waypoints = []
         num_waypoints = params.get("num_waypoints", 5)
         waypoint_spacing_m = params.get("waypoint_spacing_m", 1.0)
         
-        # 차선 정보를 기반으로 간단한 목표 지점 설정 (차선 중앙)
+        # 차선 정보 추출
         left_lane, right_lane = None, None
         for lm in scene_info.lane_markings:
-            # This logic might be too simple if lane_markings are not in vehicle frame or not easily usable
-            # For a true waypoint planner, you'd use HD Map data relative to current_pose
-            # or project perceived lanes into a vehicle-local frame.
             if lm.type == "left_lane":
                 left_lane = lm
             elif lm.type == "right_lane":
                 right_lane = lm
         
-        # 차선 중앙을 따라가는 간단한 경로 생성 (예: 5개의 웨이포인트)
-        # 이 부분은 더 정교한 경로 계획 로직으로 대체될 수 있습니다.
-        # 여기서는 ActionPlanner가 직접 차선 정보를 사용하도록 하고, PathPlanner는 단순화합니다.
         if left_lane and right_lane:
-            # 예시: 이미지 y축 중간 지점에서의 차선 중앙 x좌표를 목표로 설정
-            # 실제로는 차량 좌표계로 변환 후 경로 계획이 필요
-            # 여기서는 ActionPlanner가 차선 정보를 직접 사용하므로, 경로는 단순 직진으로 가정
+            # For a mapless system, a simple path planner might generate waypoints
+            # based on the perceived lane center or a desired offset from a lane.
+            # Here, we assume ActionPlanner will handle detailed lane following,
+            # so PathPlanner generates a generic forward path.
             pass # ActionPlanner가 차선 정보를 직접 사용
 
         # 기본적으로 직진 경로 (ActionPlanner가 차선 기반으로 조향)
@@ -59,23 +59,34 @@ class PathPlannerComponent:
             waypoints.append((start_x + i * waypoint_spacing_m, start_y)) # 직진 웨이포인트
         return PlannedPath(timestamp=current_pose.timestamp, waypoints=waypoints)
 
-    def _execute_a_star_planner(self, current_pose: LocalizationInfo, scene_info: PerceptionOutput,
+    def _execute_a_star_planner(self, current_pose: LocalizationInfo, scene_info: OptimizedPerceptionOutput,
                                 behavioral_predictions: BehavioralPredictionOutput, params: dict,
                                 image_width: int = 640) -> PlannedPath:
-        # logger.debug(f"AStarPlanner: Planning path with params: {params}")
-        # 이 부분은 실제 A* 알고리즘 구현이 필요합니다.
-        # HDMapInterface (self.hd_map)를 사용하여 그리드 맵을 생성하거나,
-        # scene_info의 drivable_area_mask 등을 활용하여 장애물 정보를 얻고,
-        # current_pose에서 목표 지점(예: DecisionMaker가 설정한 로컬 골)까지 경로를 탐색합니다.
-        # 예시:
-        # grid = self.hd_map.get_local_grid(current_pose.position, extent=50.0, resolution=params.get("grid_resolution_m"))
-        # start_node = grid.get_node_from_world_coords(current_pose.position)
-        # goal_node = ...
-        # path_nodes = a_star_search(grid, start_node, goal_node, heuristic_weight=params.get("heuristic_weight"))
-        logger.info("AStarPlanner: Placeholder - 실제 A* 로직 구현 필요.")
-        return PlannedPath(timestamp=current_pose.timestamp, waypoints=[(current_pose.position[0] + i, current_pose.position[1]) for i in range(1,3)]) # 더미 경로
+        logger.debug(f"AStarPlanner (Basic): Generating waypoints with params: {params}")
+        # This is a placeholder for a mapless path generation strategy.
+        # A true A* requires a map/grid. For mapless, this might be a behavior-based planner
+        # or one that projects a path based on current lane perception.
+        # It generates a simple path ahead, slightly adjusted.
+        
+        waypoints = []
+        num_waypoints = params.get("num_waypoints", 5) # Reuse from simple_waypoint_planner_params if not in a_star_params
+        waypoint_spacing_m = params.get("waypoint_spacing_m", 1.0) # Reuse
+        
+        start_x, start_y, _ = current_pose.position
+        # Assuming current_pose.orientation_quaternion gives vehicle's heading.
+        # For simplicity, we'll assume heading is along the x-axis in the current dummy localization if orientation is not used.
+        # A real implementation would use the orientation to project waypoints.
 
-    def plan_path(self, current_pose: LocalizationInfo, scene_info: PerceptionOutput,
+        for i in range(1, num_waypoints + 1):
+            # Simple straight path for now, as orientation handling is complex for a placeholder
+            wp_x = start_x + i * waypoint_spacing_m 
+            wp_y = start_y # + lateral_offset_correction * (i / num_waypoints) # Gradually apply correction
+            waypoints.append((wp_x, wp_y))
+        logger.info(f"AStarPlanner (Basic): Generated {len(waypoints)} waypoints ahead.")
+        return PlannedPath(timestamp=current_pose.timestamp, waypoints=waypoints)
+
+    @performance_timing
+    def plan_path(self, current_pose: LocalizationInfo, scene_info: OptimizedPerceptionOutput,
                   behavioral_predictions: BehavioralPredictionOutput, image_width: int = 640) -> PlannedPath:
         selected_method = self.strategy_map.get(self.active_strategy_name)
         if selected_method:
@@ -97,7 +108,7 @@ class DecisionMakerComponent:
 
     def _execute_default_lane_keep(self, current_pose: LocalizationInfo, planned_path: PlannedPath,
                                    behavioral_predictions: BehavioralPredictionOutput, 
-                                   scene_info: PerceptionOutput, params: dict) -> ManeuverDecision:
+                                   scene_info: OptimizedPerceptionOutput, params: dict) -> ManeuverDecision:
         # Placeholder for Decision-making (Fig 2)
         # Uses path, predictions, localization, (and potentially direct perception like traffic lights)
         # logger.debug(f"DefaultLaneKeep: Making decision based on path with {len(planned_path.waypoints)} waypoints.")
@@ -112,26 +123,36 @@ class DecisionMakerComponent:
 
     def _execute_rule_based_logic(self, current_pose: LocalizationInfo, planned_path: PlannedPath,
                                   behavioral_predictions: BehavioralPredictionOutput,
-                                  scene_info: PerceptionOutput, params: dict) -> ManeuverDecision:
-        # logger.debug(f"RuleBasedLogic: Making decision with params: {params}")
-        # 예시: scene_info.traffic_signs를 확인하여 정지선이나 신호등에 반응
-        # for sign in scene_info.traffic_signs:
-        #     if sign.type == "stop_sign" and \
-        #        calculate_distance(current_pose.position, sign.position_3d) < params.get("stop_line_distance_threshold_m"):
-        #         return ManeuverDecision(current_pose.timestamp, "STOP_AT_STOP_LINE", 0.0, None)
-        #     elif sign.type == "red_light" and ...:
-        #         return ManeuverDecision(current_pose.timestamp, "STOP_FOR_RED_LIGHT", 0.0, None)
+                                  scene_info: OptimizedPerceptionOutput, params: dict) -> ManeuverDecision:
+        logger.debug(f"RuleBasedLogic: Making decision with params: {params}")
         
-        logger.info("RuleBasedLogic: Placeholder - 실제 규칙 기반 로직 구현 필요.")
+        stop_line_threshold = params.get("stop_line_distance_threshold_m", 3.0)
+        default_target_speed_kph = params.get("target_speed_kph", 10.0) # From rule_based_logic_params
+
+        if scene_info and scene_info.traffic_signs:
+            for sign in scene_info.traffic_signs:
+                if sign.type == "stop_sign": # Assuming 'stop_sign' is a defined type
+                    # Calculate distance (simplified 2D distance)
+                    dist_to_sign = math.sqrt(
+                        (current_pose.position[0] - sign.position_3d[0])**2 +
+                        (current_pose.position[1] - sign.position_3d[1])**2
+                    )
+                    if dist_to_sign < stop_line_threshold:
+                        logger.info(f"RuleBasedLogic: Detected stop sign at {dist_to_sign:.2f}m. Commanding STOP.")
+                        return ManeuverDecision(current_pose.timestamp, "STOP_AT_SIGN", 0.0, None)
+        
+        # Default to lane keeping if no specific rules are met
+        logger.debug("RuleBasedLogic: No specific rules met. Defaulting to LANE_KEEP.")
         return ManeuverDecision( # 기본적으로 차선 유지
             timestamp=current_pose.timestamp,
             chosen_maneuver="LANE_KEEP_RULE_BASED",
-            target_speed_kph=self.strategy_params.get("target_speed_kph", 10.0), # default_lane_keep_params와 공유 가능
+            target_speed_kph=default_target_speed_kph,
             lead_vehicle_id=None
         )
 
+    @performance_timing
     def make_decision(self, current_pose: LocalizationInfo, planned_path: PlannedPath,
-                      behavioral_predictions: BehavioralPredictionOutput, scene_info: PerceptionOutput) -> ManeuverDecision:
+                      behavioral_predictions: BehavioralPredictionOutput, scene_info: OptimizedPerceptionOutput) -> ManeuverDecision:
         selected_method = self.strategy_map.get(self.active_strategy_name)
         if selected_method:
             return selected_method(current_pose, planned_path, behavioral_predictions, scene_info, self.strategy_params)
@@ -159,12 +180,9 @@ class ActionPlannerComponent:
         logger.info(f"ActionPlannerComponent: Initialized. Strategy: {self.active_strategy_name} with params: {self.strategy_params}")
 
     def _execute_hsv_lane_following(self, current_pose: LocalizationInfo, decision: ManeuverDecision,
-                                     planned_path: PlannedPath, perception_info: PerceptionOutput,
+                                     planned_path: PlannedPath, perception_info,
                                      image_width: int, params: dict) -> ActionCommand:
-        """
-        HSV 차선 정보를 사용하여 조향각과 속도를 계산하는 전략입니다.
-        (기존 _calculate_hsv_based_steering_and_speed 로직 통합 및 plan_action의 일부 로직 포함)
-        """
+        # HSV 차선 정보를 사용하여 조향각과 속도를 계산하는 전략
         self.frame_counter += 1
         target_steering_deg = 0.0
         
@@ -189,16 +207,17 @@ class ActionPlannerComponent:
         # 해당 ROI의 너비는 전체 이미지 너비(image_width)와 동일합니다.
         image_roi_width_for_hsv = image_width
 
+        # 입력 데이터 타입 확인 및 호환성 처리
+        white_metrics = None
+        yellow_metrics = None
+        
+        # OptimizedPerceptionOutput 처리
+        white_metrics = perception_info.white_line_metrics
+        yellow_metrics = perception_info.yellow_line_metrics
+
         # steering_balancing.py 로직에 따라 HSV 차선 정보를 사용하여 조향각(도)과 속도(Xycar 단위)를 계산합니다.
-        """
-        steering_balancing.py 로직에 따라 HSV 차선 정보를 사용하여 조향각(도)과 속도(Xycar 단위)를 계산합니다.
-        image_roi_width: Perception 모듈에서 HSV 처리에 사용된 ROI의 너비입니다.
-        """
         angle_deg = 0.0
         current_log = "START"
-
-        white_metrics = perception_info.white_line_hsv_metrics
-        yellow_metrics = perception_info.yellow_line_hsv_metrics
 
         # steering_balancing.py: if total_white > 300 (white_pixel_threshold는 Perception에서 처리)
         if white_metrics and white_metrics.is_detected:
@@ -282,7 +301,7 @@ class ActionPlannerComponent:
         )
 
     def _execute_pid_path_tracking(self, current_pose: LocalizationInfo, decision: ManeuverDecision,
-                                     planned_path: PlannedPath, perception_info: PerceptionOutput,
+                                     planned_path: PlannedPath, perception_info,
                                      image_width: int, params: dict) -> ActionCommand:
         """
         PID 제어를 사용하여 계획된 경로를 추종하는 전략입니다.
@@ -337,8 +356,9 @@ class ActionPlannerComponent:
                              target_velocity_mps=target_velocity_mps,
                              target_steering_angle_rad=target_steering_rad)
 
+    @performance_timing
     def plan_action(self, current_pose: LocalizationInfo, decision: ManeuverDecision, 
-                      planned_path: PlannedPath, perception_info: PerceptionOutput, 
+                      planned_path: PlannedPath, perception_info, 
                       image_width: int = 640) -> ActionCommand:
         selected_method = self.strategy_map.get(self.active_strategy_name)
         if selected_method:
@@ -348,107 +368,137 @@ class ActionPlannerComponent:
             return ActionCommand(timestamp=time.time(), target_velocity_mps=0.0, target_steering_angle_rad=0.0)
 
 class PlanningModule:
-    def __init__(self, planning_specific_config: dict, # Renamed from 'config'
-                 hd_map_path: str,
-                 overall_system_config: dict, # Renamed from 'overall_config'
-                 input_queues: Dict[str, queue.Queue], # {"localization": q_loc, "prediction": q_pred, "perception": q_perc}
-                 output_queue_control: queue.Queue):
-        self.planning_config = planning_specific_config # Store planning specific settings
-        self.hd_map = HDMapInterface(hd_map_path) # Re-use or pass instance
-
-        # Use planning_specific_config for sub-components
-        self.path_planner = PathPlannerComponent(self.planning_config.get("path_planner", {}), self.hd_map)
-        self.decision_maker = DecisionMakerComponent(self.planning_config.get("decision_maker", {}))
-        self.action_planner = ActionPlannerComponent(self.planning_config.get("action_planner", {}))
-        
-        # Use overall_system_config for global settings like image_width
-        self.image_width = overall_system_config.get("image_width", 640)
-
-        self.input_queue_localization = input_queues["localization"]
-        self.input_queue_prediction = input_queues["prediction"]
-        self.input_queue_perception = input_queues["perception"] # For static scene info, traffic lights etc.
+    def __init__(self, planning_specific_config: dict, overall_system_config: dict,
+                 input_queues: dict, output_queue_control: queue.Queue):
+        self.config = planning_specific_config
+        self.input_queues = input_queues
         self.output_queue_control = output_queue_control
-
-        self._latest_localization: Optional[LocalizationInfo] = None
-        self._latest_prediction: Optional[BehavioralPredictionOutput] = None
-        self._latest_perception: Optional[PerceptionOutput] = None
-
         self._running = False
         self._thread = None
+        # 각 컴포넌트 초기화
+        self.path_planner = PathPlannerComponent(self.config.get("path_planner", {}))
+        self.decision_maker = DecisionMakerComponent(self.config.get("decision_maker", {}))
+        self.action_planner = ActionPlannerComponent(self.config.get("action_planner", {}))
+        
         logger.info("PlanningModule: Initialized.")
 
+    @performance_timing
     def run(self):
+        print("[PLANNING] run() 진입", flush=True)
         logger.info("PlanningModule: Thread started.")
+        
         while self._running:
-            # Fetch latest data from all input queues (non-blocking)
+            print("[PLANNING] run() 루프 진입, 데이터 수집 시도", flush=True)
             try:
-                self._latest_localization = self.input_queue_localization.get(block=False)
-                self.input_queue_localization.task_done()
-            except queue.Empty: pass
-
-            try:
-                self._latest_prediction = self.input_queue_prediction.get(block=False)
-                self.input_queue_prediction.task_done()
-            except queue.Empty: pass
-
-            try:
-                self._latest_perception = self.input_queue_perception.get(block=False)
-                self.input_queue_perception.task_done()
-            except queue.Empty: pass
-
-            # Only proceed if we have essential data (at least localization)
-            if self._latest_localization and self._latest_prediction and self._latest_perception :
-                current_time = time.time()
-                # Check data freshness (optional, for simplicity not implemented here)
-                # if abs(current_time - self._latest_localization.timestamp) > STALE_THRESHOLD: continue etc.
-
-                # logger.debug(f"PlanningModule: Processing with Loc_ts={self._latest_localization.timestamp}, Pred_ts={self._latest_prediction.timestamp}, Perc_ts={self._latest_perception.timestamp}")
-
-                # 1. Path Planning
-                planned_path = self.path_planner.plan_path(
-                    self._latest_localization, self._latest_perception, self._latest_prediction, self.image_width
-                )
-
-                # 2. Decision Making
-                maneuver_decision = self.decision_maker.make_decision(
-                    self._latest_localization, planned_path, self._latest_prediction, self._latest_perception
-                )
-                # 3. Action Planning
-                action_command = self.action_planner.plan_action(
-                    self._latest_localization, maneuver_decision, planned_path, self._latest_perception, self.image_width
-                )
-
-                try:
-                    self.output_queue_control.put(action_command, timeout=0.1)
-                except queue.Full:
-                    logging.warning("PlanningModule: Control output queue full.")
-
-                # Clear latest data to ensure new data is used next cycle, or manage timestamps carefully
-                # self._latest_localization = None # Or rely on overwriting by new queue items
-                # self._latest_prediction = None
-                # self._latest_perception = None
-            else:
-                # Wait if essential data is missing
-                time.sleep(0.02) # Avoid busy-wait
-            
-            if not self._running: # Check running flag again before sleeping
-                break
-            # Add a small sleep if no data was processed to avoid tight loop if all queues are empty
-            if not (self._latest_localization and self._latest_prediction and self._latest_perception):
-                time.sleep(0.01) # Small sleep if waiting for data
-
+                # 입력 큐들에서 최신 데이터 수집
+                self._collect_latest_data()
+                
+                # 모든 필수 데이터가 있는지 확인
+                if self._latest_localization and self._latest_perception:
+                    print(f"PlanningModule: Processing data - localization: {self._latest_localization.timestamp:.3f}, perception: {self._latest_perception.timestamp:.3f}", flush=True)
+                    
+                    # 경로 계획
+                    planned_path = self.path_planner.plan_path(
+                        current_pose=self._latest_localization,
+                        scene_info=self._latest_perception,
+                        behavioral_predictions=self._latest_prediction,
+                        image_width=self.overall_config.get("image_width", 640)
+                    )
+                    
+                    # 의사 결정
+                    decision = self.decision_maker.make_decision(
+                        current_pose=self._latest_localization,
+                        planned_path=planned_path,
+                        behavioral_predictions=self._latest_prediction,
+                        scene_info=self._latest_perception
+                    )
+                    
+                    # 행동 계획
+                    action_command = self.action_planner.plan_action(
+                        current_pose=self._latest_localization,
+                        decision=decision,
+                        planned_path=planned_path,
+                        perception_info=self._latest_perception,
+                        image_width=self.overall_config.get("image_width", 640)
+                    )
+                    
+                    # 제어 모듈로 전달
+                    try:
+                        # 우선순위 큐 사용
+                        from .optimized_data_structures import PriorityQueueItem, DataPriority
+                        priority_item = PriorityQueueItem(
+                            priority=DataPriority.CONTROL_COMMAND,
+                            timestamp=action_command.timestamp,
+                            data=action_command
+                        )
+                        self.output_queue_control.put(priority_item, timeout=0.1)
+                        print(f"PlanningModule: Sent action command to control - steering: {action_command.steering_angle:.2f}, speed: {action_command.target_speed_kph:.2f}", flush=True)
+                        logger.info(f"PlanningModule: Sent action command - steering: {action_command.steering_angle:.2f}, speed: {action_command.target_speed_kph:.2f}")
+                        performance_tracker.record_metric("action_commands_sent", 1)
+                    except queue.Full:
+                        logger.warning("PlanningModule: Control queue is full, discarding action command")
+                        performance_tracker.record_metric("action_commands_dropped", 1)
+                else:
+                    # 필수 데이터 부족 시 대기
+                    time.sleep(0.01)
+                    
+            except Exception as e:
+                logger.error(f"PlanningModule: Error in main loop: {e}", exc_info=True)
+                performance_tracker.record_metric("error_events", 1)
+                time.sleep(0.01)
+        
         logger.info("PlanningModule: Thread stopped.")
 
+    def _collect_latest_data(self):
+        """입력 큐들에서 최신 데이터를 수집"""
+        # Localization 데이터
+        try:
+            while True:
+                queue_item = self.input_queues["localization"].get_nowait()
+                if hasattr(queue_item, 'data'):
+                    self._latest_localization = queue_item.data
+                else:
+                    self._latest_localization = queue_item
+                self.input_queues["localization"].task_done()
+        except (queue.Empty, _queue.Empty):
+            pass
+        
+        # Prediction 데이터
+        try:
+            while True:
+                queue_item = self.input_queues["prediction"].get_nowait()
+                if hasattr(queue_item, 'data'):
+                    self._latest_prediction = queue_item.data
+                else:
+                    self._latest_prediction = queue_item
+                self.input_queues["prediction"].task_done()
+        except (queue.Empty, _queue.Empty):
+            pass
+        
+        # Perception 데이터
+        try:
+            while True:
+                queue_item = self.input_queues["perception"].get_nowait()
+                if hasattr(queue_item, 'data'):
+                    self._latest_perception = queue_item.data
+                else:
+                    self._latest_perception = queue_item
+                self.input_queues["perception"].task_done()
+        except (queue.Empty, _queue.Empty):
+            pass
+
     def start(self):
+        """Planning 모듈 시작"""
         if not self._running:
             self._running = True
             self._thread = threading.Thread(target=self.run, name="PlanningThread")
             self._thread.start()
-            logger.info("PlanningModule: Started.")
+            logger.info("PlanningModule: Started")
 
     def stop(self):
+        """Planning 모듈 정지"""
         if self._running:
             self._running = False
             if self._thread:
                 self._thread.join(timeout=2.0)
-            logger.info("PlanningModule: Stopped.")
+            logger.info("PlanningModule: Stopped")

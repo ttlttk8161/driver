@@ -1,13 +1,58 @@
+# 예측 모듈
 import queue
+import _queue
 import threading
 import time
-from typing import Dict, List
-from .data_structures import (
-    PerceptionOutput, LocalizationInfo, BehavioralPredictionOutput, PredictedTrajectory, DetectedObject
+from typing import Dict, List, Tuple
+from .optimized_data_structures import (
+    LocalizationInfo, BehavioralPredictionOutput, PredictedTrajectory
 )
+from .optimized_data_structures import OptimizedPerceptionOutput, DetectedObject
+import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
+
+class KalmanFilterCV:
+    """2D 등속 모델용 칼만 필터"""
+    def __init__(self, initial_pos: Tuple[float, float],
+                 initial_vel: Tuple[float, float] = (0.0, 0.0),
+                 process_noise_std_acc: float = 0.5,
+                 measurement_noise_std_pos: float = 0.1,
+                 initial_covariance_scale: float = 1.0):
+        # State: [x, y, vx, vy]
+        self.x = np.array([initial_pos[0], initial_pos[1], initial_vel[0], initial_vel[1]]).reshape(4, 1)
+        # State Covariance Matrix P
+        self.P = np.eye(4) * initial_covariance_scale
+        # Measurement Matrix H
+        self.H = np.array([[1, 0, 0, 0],
+                           [0, 1, 0, 0]])
+        # Measurement Noise Covariance R
+        self.R = np.eye(2) * (measurement_noise_std_pos ** 2)
+        # Process Noise standard deviation for acceleration (used to build Q)
+        self.process_noise_std_acc = process_noise_std_acc
+        # State Transition Matrix F (dt will be set in predict)
+        # self.F = np.eye(4) # F is calculated in predict based on dt
+        # Process Noise Covariance Q (dt will be set in predict)
+        # self.Q = np.eye(4) # Q is calculated in predict based on dt
+
+    def predict(self, dt: float):
+        F = np.array([[1, 0, dt, 0],
+                      [0, 1, 0, dt],
+                      [0, 0, 1,  0],
+                      [0, 0, 0,  1]])
+        q_pos_component = (dt**2) / 2.0
+        q_vel_component = dt
+        Q = np.diag([q_pos_component**2, q_pos_component**2, q_vel_component**2, q_vel_component**2]) * (self.process_noise_std_acc ** 2)
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + Q
+
+    def update(self, z_measurement: np.ndarray): # z_measurement is [x_meas, y_meas]
+        y_residual = z_measurement.reshape(2,1) - self.H @ self.x
+        S_innovation_cov = self.H @ self.P @ self.H.T + self.R
+        K_kalman_gain = self.P @ self.H.T @ np.linalg.inv(S_innovation_cov)
+        self.x = self.x + K_kalman_gain @ y_residual
+        self.P = (np.eye(4) - K_kalman_gain @ self.H) @ self.P
 
 class PredictionModule:
     def __init__(self, config: dict,
@@ -31,20 +76,37 @@ class PredictionModule:
         self._latest_localization: LocalizationInfo = None
         self._running = False
         self._thread = None
+        self.perception_buffer_max_size = self.config.get("perception_buffer_max_size", 20) # Use self.config
+        
+        # Store KalmanFilterCV instances per object ID
+        self.kalman_filters: Dict[int, KalmanFilterCV] = {}
+        self.last_kf_update_time: Dict[int, float] = {} # object_id -> last update timestamp
+
+
+        self.timestamp_match_threshold = self.config.get("timestamp_match_threshold_sec", 0.2) # Use self.config
         logger.info("PredictionModule (Behavioral): Initialized.")
 
-    def _execute_simple_extrapolation(self, perception_data: PerceptionOutput, 
+    def _execute_simple_extrapolation(self, perception_data, 
                                       ego_localization: LocalizationInfo, 
                                       params: dict) -> BehavioralPredictionOutput:
-        # Placeholder for behavioral prediction logic (Fig. 2 Prediction block)
-        # Uses perceived objects and ego state to predict future trajectories/intentions of other agents
-        # logger.debug(f"SimpleExtrapolation: Predicting behavior based on perception at {perception_data.timestamp} and localization at {ego_localization.timestamp}")
-
+        # 입력 데이터 타입 확인 및 호환성 처리
         predicted_trajectories: List[PredictedTrajectory] = []
         prediction_horizon_sec = params.get("prediction_horizon_sec", 2.0)
         time_step_sec = params.get("time_step_sec", 0.5)
+        
+        # OptimizedPerceptionOutput 처리
+        detected_objects = []
+        timestamp = 0.0
+        
+        if hasattr(perception_data, 'detected_objects'):
+            detected_objects = perception_data.detected_objects
+            timestamp = perception_data.timestamp
+        elif hasattr(perception_data, 'timestamp'):
+            # OptimizedPerceptionOutput의 경우 detected_objects가 없을 수 있음
+            timestamp = perception_data.timestamp
+            # 기본 빈 리스트 사용
 
-        for obj in perception_data.detected_objects:
+        for obj in detected_objects:
             # Example: Simple extrapolation or more complex model (RNN, etc.)
             if obj.id == 1: # Example: predict for object with ID 1
                 path = []
@@ -65,79 +127,117 @@ class PredictionModule:
                 )
 
         return BehavioralPredictionOutput(
-            timestamp=perception_data.timestamp,
+            timestamp=timestamp,
             predicted_trajectories=predicted_trajectories
         )
 
-    def _execute_kalman_cv_prediction(self, perception_data: PerceptionOutput,
+    def _execute_kalman_cv_prediction(self, perception_data,
                                         ego_localization: LocalizationInfo,
                                         params: dict) -> BehavioralPredictionOutput:
-        # logger.debug(f"KalmanCVPrediction: Predicting behavior with params: {params}")
+        # 입력 데이터 타입 확인 및 호환성 처리
         predicted_trajectories: List[PredictedTrajectory] = []
         
-        # 이 부분은 실제 Kalman Filter 구현이 필요합니다.
-        # 각 detected_object에 대해 Kalman Filter를 초기화/업데이트하고 예측을 수행합니다.
-        # 예시:
-        # for obj in perception_data.detected_objects:
-        #     if not hasattr(self, f"kf_obj_{obj.id}"):
-        #         # self.kf_obj_{obj.id} = KalmanFilter(dim_x=4, dim_z=2) # 상태: x, y, vx, vy
-        #         # ... KF 초기화 ...
-        #         pass
-        #     # kf = getattr(self, f"kf_obj_{obj.id}")
-        #     # kf.predict()
-        #     # kf.update(measurement) # measurement: obj.position_3d[:2]
-        #     # path_points = []
-        #     # for _ in range(params.get("prediction_steps", 5)):
-        #     #     # ... kf.x에서 예측된 위치 추출 ...
-        #     #     path_points.append(...)
-        #     # predicted_trajectories.append(PredictedTrajectory(obj.id, 0.7, path_points))
-        logger.info("KalmanCVPrediction: Placeholder - 실제 Kalman Filter 로직 구현 필요.")
-        return BehavioralPredictionOutput(timestamp=perception_data.timestamp, predicted_trajectories=[])
+        # OptimizedPerceptionOutput 처리
+        detected_objects = []
+        current_time = 0.0
+        
+        if hasattr(perception_data, 'detected_objects'):
+            detected_objects = perception_data.detected_objects
+            current_time = perception_data.timestamp
+        elif hasattr(perception_data, 'timestamp'):
+            # OptimizedPerceptionOutput의 경우 detected_objects가 없을 수 있음
+            current_time = perception_data.timestamp
+            # 기본 빈 리스트 사용
+            
+        process_noise_std_acc = params.get("process_noise_std_dev_acc", 0.5)
+        measurement_noise_std_pos = params.get("measurement_noise_std_pos", 0.1)
+        prediction_steps = params.get("prediction_steps", 5)
+        initial_vel_fallback = params.get("initial_velocity_if_none", 0.1)
+
+        for obj in detected_objects:
+            obj_id = obj.id
+            measured_pos = np.array(obj.position_3d[:2]) # Use (x, y)
+
+            dt = current_time - self.last_kf_update_time.get(obj_id, current_time) # dt for predict step
+            if dt <= 1e-6 : # Avoid zero or too small dt, especially for the first update
+                dt = 1.0 / self.config.get("perception_update_rate_hz", 10) # Assume a default rate
+
+            if obj_id not in self.kalman_filters:
+                initial_vel = (0.0, 0.0)
+                if obj.velocity and len(obj.velocity) >= 2:
+                    initial_vel = obj.velocity[:2]
+                else: # Estimate initial velocity if possible or use fallback
+                    # For simplicity, if no velocity, assume a small initial velocity or zero
+                    # A better approach would be to use the first two measurements to estimate velocity.
+                    # Here, we use a fallback or zero.
+                    # If object is moving towards ego, vx might be negative.
+                    # This part needs more sophisticated handling for robust initialization.
+                    # For now, let's assume a small forward velocity if type is 'car' etc.
+                    if obj.type in ["car", "vehicle"]: # Example
+                         initial_vel = (initial_vel_fallback, 0.0) # Small forward velocity
+
+                self.kalman_filters[obj_id] = KalmanFilterCV(
+                    initial_pos=measured_pos,
+                    initial_vel=initial_vel,
+                    process_noise_std_acc=process_noise_std_acc,
+                    measurement_noise_std_pos=measurement_noise_std_pos
+                )
+                logger.debug(f"KalmanCVPrediction: Initialized KF for obj {obj_id} at pos {measured_pos}, vel {initial_vel}")
+            
+            kf = self.kalman_filters[obj_id]
+            kf.predict(dt=dt)
+            kf.update(measured_pos)
+            self.last_kf_update_time[obj_id] = current_time
+
+            # Generate future trajectory
+            path_points = []
+            temp_kf_state = np.copy(kf.x) # Use a copy of the state for multi-step prediction
+            prediction_dt = params.get("prediction_time_step_sec", 0.2) # Get prediction dt from params
+
+            for _ in range(prediction_steps):
+                # Predict one step ahead using the fixed prediction_dt
+                # For multi-step prediction, we only apply the predict step of KF
+                F_pred = np.array([[1,0,prediction_dt,0],[0,1,0,prediction_dt],[0,0,1,0],[0,0,0,1]])
+                temp_kf_state = F_pred @ temp_kf_state
+                # Q_pred can be calculated similarly to kf.predict if needed for uncertainty propagation
+                path_points.append((temp_kf_state[0,0], temp_kf_state[1,0], obj.position_3d[2])) # Keep original Z
+            
+            predicted_trajectories.append(
+                PredictedTrajectory(object_id=obj_id, probability=0.8, path_points=path_points) # Placeholder probability
+            )
+            logger.debug(f"KalmanCVPrediction: Obj {obj_id} predicted path: {path_points}")
+
+        return BehavioralPredictionOutput(timestamp=current_time, predicted_trajectories=predicted_trajectories)
 
     def run(self):
-        logger.info(f"PredictionModule: Thread started. Strategy: {self.active_strategy_name}")
-        perception_buffer = {} # Buffer perception data by timestamp
-        selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
-
+        print("[PREDICTION] run() 진입", flush=True)
+        logger.info(f"PredictionModule: Thread started. Active strategy: {self.active_strategy_name}")
         while self._running:
-            # Update latest localization
+            print("[PREDICTION] run() 루프 진입, 큐 get 시도", flush=True)
             try:
-                self._latest_localization = self.input_queue_localization.get(block=False)
-                self.input_queue_localization.task_done()
-            except queue.Empty:
-                pass # No new localization, use the latest one
-
-            # Process perception data
-            try:
-                perception_data: PerceptionOutput = self.input_queue_perception.get(timeout=0.1) # Timeout to allow checking _running
-                perception_buffer[perception_data.timestamp] = perception_data # Store in buffer
-
-                # Try to match with localization (simple timestamp matching or nearest)
-                if self._latest_localization:
-                    # Find closest perception data to latest localization, or use latest perception data
-                    if selected_strategy_method:
-                        prediction_result = selected_strategy_method(perception_data, self._latest_localization, self.strategy_params)
-                        try:
-                            self.output_queue.put(prediction_result, timeout=0.1)
-                        except queue.Full:
-                            logger.warning("PredictionModule: Output queue full.")
-                    else:
-                        logger.warning(f"PredictionModule: Strategy '{self.active_strategy_name}' not found.")
+                perception_data = self.input_queue_perception.get(timeout=1.0)
+                print(f"PredictionModule: Got perception data from queue (timestamp={getattr(perception_data, 'timestamp', 'unknown')})", flush=True)
+                logger.info(f"PredictionModule: Got perception data from queue (timestamp={getattr(perception_data, 'timestamp', 'unknown')})")
+                try:
+                    localization_data = self.input_queue_localization.get_nowait()
+                except Exception:
+                    localization_data = None
+                if self.active_strategy_name in self.strategy_map:
+                    pred = self.strategy_map[self.active_strategy_name](perception_data, localization_data, self.strategy_params)
                 else:
-                    # Wait for localization data if not available yet
-                    logger.info("PredictionModule: Waiting for initial localization data.")
-
+                    logger.warning(f"PredictionModule: Unknown strategy '{self.active_strategy_name}', using simple_extrapolation.")
+                    pred = self._execute_simple_extrapolation(perception_data, localization_data, self.strategy_params)
+                self.output_queue.put(pred, timeout=0.1)
+                logger.info(f"PredictionModule: Put prediction output to output queue (timestamp={pred.timestamp})")
+                print(f"PredictionModule: Put prediction output to output queue (timestamp={pred.timestamp})", flush=True)
                 self.input_queue_perception.task_done()
-
-            except queue.Empty:
+            except (queue.Empty, _queue.Empty):
                 if not self._running:
                     break
-                time.sleep(0.01) # Avoid busy wait
+                logger.info("PredictionModule: Waiting for perception data in queue...")
             except Exception as e:
                 logger.error(f"PredictionModule: Error processing data: {e}", exc_info=True)
-
         logger.info("PredictionModule: Thread stopped.")
-
 
     def start(self):
         if not self._running:

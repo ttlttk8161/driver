@@ -1,26 +1,21 @@
+# 인지 모듈
 import logging
 import queue
+import _queue
 import threading
-import cv2 # For Canny/Hough example
+import cv2
+import numpy as np
 import time
-from .data_structures import SensorData, PerceptionOutput, WhiteLineHsvMetrics, YellowLineHsvMetrics # 필요한 데이터 구조 import
+from .optimized_data_structures import SensorData, LaneMarking
+from .optimized_data_structures import OptimizedSensorInput, OptimizedPerceptionOutput, PerformanceMetrics, monitor_performance, WhiteLineHsvMetrics, YellowLineHsvMetrics
 
-# 로깅 설정 (애플리케이션의 다른 부분에서 이미 설정되었을 수 있습니다)
-# 예: logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class PerceptionModule:
     def __init__(self, config: dict, 
                  input_queue_sensor_data: queue.Queue, 
                  output_queues: dict):
-        """
-        PerceptionModule을 초기화합니다.
-        Args:
-            config (dict): Perception 모듈 설정. 'detection' 설정을 포함합니다.
-            input_queue_sensor_data (queue.Queue): SensorInputManager로부터 SensorData를 받는 큐.
-            output_queues (dict): 처리된 PerceptionOutput을 전달할 출력 큐들의 딕셔너리.
-                                  예: {"localization": queue_loc, "prediction": queue_pred, "planning": queue_plan}
-        """
+        """인지 모듈 초기화"""
         self.config = config if config is not None else {}
         self.input_queue_sensor_data = input_queue_sensor_data
         self.output_queues = output_queues
@@ -28,33 +23,39 @@ class PerceptionModule:
         detection_config = self.config.get('detection', {})
         
         self.active_perception_algorithm = detection_config.get('active_perception_algorithm')
-        # self.debug_cv_show = detection_config.get('debug_cv_show', False) # 각 알고리즘 파라미터로 이동됨
         
-        
-        # 각 알고리즘에 대한 파라미터를 저장합니다.
+        # 각 알고리즘 파라미터 저장
         self.params = {}
-        # task.md에 명시된 파라미터 블록들을 로드합니다.
-        # 실제 알고리즘 실행 시 해당 메소드에 전달됩니다.
         self.params['hsv_lane_detection'] = detection_config.get('hsv_lane_detection_params', {})
         self.params['canny_hough_lane_detection'] = detection_config.get('canny_hough_lane_detection_params', {})
         self.params['custom_block_example'] = detection_config.get('custom_block_example_params', {})
-        # 새로운 알고리즘 "my_new_algorithm"의 경우 다음과 같이 추가할 수 있습니다:
-        # self.params['my_new_algorithm'] = detection_config.get('my_new_algorithm_params', {})
 
         self._running = False
         self._thread = None
         logger.info(f"PerceptionModule initialized. Active algorithm: {self.active_perception_algorithm}")
 
-    def _process_sensor_data(self, sensor_data: SensorData) -> PerceptionOutput:
+    @monitor_performance
+    def _process_sensor_data(self, sensor_input) -> OptimizedPerceptionOutput:
         """
-        active_perception_algorithm에 따라 센서 데이터를 처리하여 PerceptionOutput을 생성합니다.
+        active_perception_algorithm에 따라 센서 데이터를 처리하여 OptimizedPerceptionOutput을 생성합니다.
         Args:
-            sensor_data (SensorData): 처리할 센서 데이터 (이미지, 라이다 등 포함).
+            sensor_input: 처리할 센서 데이터 (SensorData 또는 OptimizedSensorInput).
         Returns:
-            PerceptionOutput: 인식 결과 데이터 구조.
+            OptimizedPerceptionOutput: 최적화된 인식 결과 데이터 구조.
         """
-        image = sensor_data.vision_data # SensorData에서 이미지 추출
-        timestamp = sensor_data.timestamp
+        print(f"PerceptionModule: Processing sensor input - timestamp: {getattr(sensor_input, 'timestamp', 'unknown')}")
+        
+        # 입력 데이터 타입 확인 및 호환성 처리
+        if isinstance(sensor_input, OptimizedSensorInput):
+            image = sensor_input.camera_data
+            timestamp = sensor_input.timestamp
+            sequence_id = sensor_input.sequence_id
+        else:  # 기존 SensorData 호환성
+            image = sensor_input.vision_data
+            timestamp = sensor_input.timestamp
+            sequence_id = 0
+        
+        start_time = time.time()
         
         # 알고리즘 이름과 해당 실행 메소드를 매핑합니다.
         # 새로운 알고리즘을 추가할 때 이 사전에 추가하면 됩니다.
@@ -70,23 +71,24 @@ class PerceptionModule:
             algorithm_params = self.params.get(self.active_perception_algorithm, {})
             # logger.debug(f"Executing {self.active_perception_algorithm} with params: {algorithm_params}") # 너무 빈번할 수 있음
             # 각 알고리즘 메소드는 (detected_objects, lane_markings, ...) 등을 포함하는 튜플이나 딕셔너리를 반환해야 함
-            # 여기서는 플레이스홀더이므로, 기본 PerceptionOutput을 반환하도록 수정
+            # 여기서는 플레이스홀더이므로, 기본 OptimizedPerceptionOutput을 반환하도록 수정
             if image is not None: # 이미지가 있을 때만 알고리즘 실행
                 algo_output_dict = selected_method(image, algorithm_params)
             else:
                 algo_output_dict = {} # 이미지가 없으면 빈 결과
             
-            # 예시: 알고리즘이 딕셔너리 형태로 white_line_hsv_metrics 등을 반환한다고 가정
-            return PerceptionOutput(
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            # 최적화된 출력 생성
+            return OptimizedPerceptionOutput(
                 timestamp=timestamp,
+                sequence_id=sequence_id,
+                processing_time_ms=processing_time_ms,
+                white_line_metrics=algo_output_dict.get("white_line_hsv_metrics"),
+                yellow_line_metrics=algo_output_dict.get("yellow_line_hsv_metrics"),
                 detected_objects=algo_output_dict.get("detected_objects", []),
-                lane_markings=algo_output_dict.get("lane_markings", []),
-                drivable_area_mask=algo_output_dict.get("drivable_area_mask"),
-                traffic_signs=algo_output_dict.get("traffic_signs", []),
-                semantic_segmentation_map=None, instance_segmentation_map=None, depth_map=None,
-                optical_flow_map=None, scene_flow_map=None, raw_features_for_localization=None,
-                white_line_hsv_metrics=algo_output_dict.get("white_line_hsv_metrics"),
-                yellow_line_hsv_metrics=algo_output_dict.get("yellow_line_hsv_metrics")
+                detection_confidence=algo_output_dict.get("detection_confidence", 0.0),
+                quality_score=algo_output_dict.get("quality_score", 0.0)
             )
         elif self.active_perception_algorithm is None:
             logger.warning("PerceptionModule: Active perception algorithm is None. 작업이 수행되지 않습니다.")
@@ -94,14 +96,16 @@ class PerceptionModule:
             logger.warning(f"알 수 없거나 지원되지 않는 인식 알고리즘이 선택되었습니다: {self.active_perception_algorithm}")
             logger.warning("PerceptionModule: 작업이 수행되지 않습니다.")
         
-        # 알고리즘이 선택되지 않았거나, 알 수 없는 경우 기본 빈 PerceptionOutput 반환
-        return PerceptionOutput(
-            timestamp=timestamp, detected_objects=[], lane_markings=[], drivable_area_mask=None,
-            traffic_signs=[], semantic_segmentation_map=None, instance_segmentation_map=None,
-            depth_map=None, optical_flow_map=None, scene_flow_map=None,
-            raw_features_for_localization=None, white_line_hsv_metrics=None, yellow_line_hsv_metrics=None
+        # 알고리즘이 선택되지 않았거나, 알 수 없는 경우 기본 빈 OptimizedPerceptionOutput 반환
+        processing_time_ms = (time.time() - start_time) * 1000
+        
+        return OptimizedPerceptionOutput(
+            timestamp=timestamp,
+            sequence_id=sequence_id,
+            processing_time_ms=processing_time_ms
         )
 
+    @monitor_performance
     def _execute_hsv_lane_detection(self, image, params) -> dict:
         """
         HSV 차선 감지 알고리즘 예시 플레이스홀더입니다.
@@ -162,18 +166,62 @@ class PerceptionModule:
         Canny Hough 차선 감지 알고리즘 예시 플레이스홀더입니다.
         """
         if image is None: return {}
-        # logger.debug(f"Running _execute_canny_hough_lane_detection with params: {params}")
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, params.get("canny_low_threshold", 50), params.get("canny_high_threshold", 150))
         
-        # ROI 설정 (Hough 변환 전에)
-        # lines = cv2.HoughLinesP(edges, ...) # 실제 Hough 변환 로직
+        height, width = image.shape[:2]
+        
+        # 1. Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # 2. Apply Gaussian Blur
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # 3. Apply Canny Edge Detection
+        canny_low = params.get("canny_low_threshold", 50)
+        canny_high = params.get("canny_high_threshold", 150)
+        edges = cv2.Canny(blurred, canny_low, canny_high)
+        
+        # 4. Define and Apply ROI
+        roi_y_start_ratio = params.get("roi_y_start_ratio", 0.5)
+        roi_y_start = int(height * roi_y_start_ratio)
+        
+        mask = np.zeros_like(edges)
+        roi_poly_vertices = np.array([[(0, roi_y_start), (width, roi_y_start), (width, height), (0, height)]], dtype=np.int32)
+        cv2.fillPoly(mask, roi_poly_vertices, 255)
+        masked_edges = cv2.bitwise_and(edges, mask)
+
+        # 5. Apply Hough Transform
+        hough_threshold = params.get("hough_threshold", 20)
+        min_line_length = params.get("hough_min_line_length", 10)
+        max_line_gap = params.get("hough_max_line_gap", 5)
+        
+        lines = cv2.HoughLinesP(masked_edges, 1, np.pi / 180, hough_threshold,
+                                minLineLength=min_line_length, maxLineGap=max_line_gap)
+        
+        lane_markings_list = []
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                lane_marking = LaneMarking(
+                    points=[(float(x1), float(y1)), (float(x2), float(y2))],
+                    type="detected_line_segment", # 차후 개선 가능
+                    confidence=1.0 # 임시 신뢰도
+                )
+                lane_markings_list.append(lane_marking)
 
         if params.get("debug_cv_show", False):
-            cv2.imshow("Canny Edges", edges)
+            debug_image = image.copy()
+            if lines is not None:
+                for line_segment in lines: # 변수명 변경
+                    x1, y1, x2, y2 = line_segment[0]
+                    cv2.line(debug_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.polylines(debug_image, [roi_poly_vertices], isClosed=True, color=(0,0,255), thickness=2)
+            cv2.imshow("Canny-Hough Debug", debug_image)
+            # cv2.imshow("Canny Edges (Full)", edges) # 디버깅 시 필요하면 활성화
+            # cv2.imshow("Masked Edges (ROI)", masked_edges) # 디버깅 시 필요하면 활성화
             cv2.waitKey(1)
-        return {} # 빈 결과 반환
+        
+        logger.debug(f"CannyHough: Detected {len(lane_markings_list)} line segments.")
+        return {"lane_markings": lane_markings_list}
 
     def _execute_custom_block_example(self, image, params) -> dict:
         """
@@ -185,21 +233,28 @@ class PerceptionModule:
         return {} # 빈 결과 반환
 
     def run(self):
+        print("[PERCEPTION] run() 진입", flush=True)
         logger.info(f"PerceptionModule: Thread started. Active algorithm: {self.active_perception_algorithm}")
         while self._running:
             try:
-                sensor_data: SensorData = self.input_queue_sensor_data.get(timeout=1.0)
+                sensor_data = self.input_queue_sensor_data.get(timeout=1.0)
+                print(f"[PERCEPTION] sensor_data type: {type(sensor_data)}, value: {repr(sensor_data)}", flush=True)
+                print(f"[PERCEPTION] input_queue_sensor_data type: {type(self.input_queue_sensor_data)}", flush=True)
+                print(f"PerceptionModule: Got sensor data from queue (timestamp={getattr(sensor_data, 'timestamp', 'unknown')})", flush=True)
+                logger.info(f"PerceptionModule: Got sensor data from queue (timestamp={getattr(sensor_data, 'timestamp', 'unknown')})")
                 perception_output = self._process_sensor_data(sensor_data)
-                
                 for key, q in self.output_queues.items():
                     try:
                         q.put(perception_output, timeout=0.1)
+                        print(f"PerceptionModule: Put perception output to '{key}' queue (timestamp={perception_output.timestamp})", flush=True)
+                        logger.info(f"PerceptionModule: Put perception output to '{key}' queue (timestamp={perception_output.timestamp})")
                     except queue.Full:
                         logger.warning(f"PerceptionModule: Output queue '{key}' is full. Discarding data.")
                 self.input_queue_sensor_data.task_done()
-            except queue.Empty:
+            except (queue.Empty, _queue.Empty):
                 if not self._running:
                     break
+                logger.info("PerceptionModule: Waiting for sensor data in queue...")
             except Exception as e:
                 logger.error(f"PerceptionModule: Error processing sensor data: {e}", exc_info=True)
         logger.info("PerceptionModule: Thread stopped.")

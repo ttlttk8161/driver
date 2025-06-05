@@ -1,58 +1,64 @@
+# 제어 모듈
 import queue
+import _queue
 import threading
 import time
-from .data_structures import ActionCommand, ControlActuatorCommands
-import numpy as np # For np.clip
-import math # For math.degrees
+from .optimized_data_structures import ActionCommand, ControlActuatorCommands
+from .optimized_data_structures import DataPriority, PriorityQueueItem
+from .performance_monitor import performance_timing, PerformanceTracker
+import numpy as np
+import math
 import logging
 
 logger = logging.getLogger(__name__)
 
+# 성능 추적기 초기화
+performance_tracker = PerformanceTracker("ControlModule")
+
 class VehicleInterface:
-    """Dummy interface to simulate sending commands to a vehicle."""
+    """차량 인터페이스"""
     def __init__(self, config: dict, motor_publisher=None, motor_msg_template=None):
         self.config = config
         self.motor_publisher = motor_publisher
-        self.motor_msg = motor_msg_template # This should be an instance of XycarMotor
-        self.max_speed = self.config.get("max_xycar_speed", 50.0) # Xycar의 최대 속도값 (0-50)
+        self.motor_msg = motor_msg_template
+        self.max_speed = self.config.get("max_xycar_speed", 50.0)
         self.min_speed = self.config.get("min_xycar_speed", 0.0)
-        self.max_angle = self.config.get("max_xycar_angle", 50.0) # Xycar의 최대 조향각 (절대값)
+        self.max_angle = self.config.get("max_xycar_angle", 50.0)
+        
+        # 속도 변환 인수 설정
+        self.xycar_mps_to_speed_unit_factor = self.config.get("xycar_mps_to_speed_unit_factor", 35.71)
 
         if self.motor_publisher and self.motor_msg:
-            logger.info(f"VehicleInterface: Initialized with ROS motor publisher. MaxSpeed: {self.max_speed}, MaxAngle: {self.max_angle}")
+            logger.info(f"VehicleInterface: Initialized with ROS motor publisher. MaxSpeed: {self.max_speed}, MaxAngle: {self.max_angle}, SpeedFactor: {self.xycar_mps_to_speed_unit_factor}")
         else:
             logger.warning(f"VehicleInterface: Initialized (simulation mode - no ROS publisher). Config: {config}")
 
-    def send_commands(self, steering: float, throttle: float, brake: float):
+    def send_commands(self, steering_rad: float, target_velocity_mps: float):
+        """제어 명령 전송"""
         if self.motor_publisher and self.motor_msg:
-            # steering: 라디안 단위의 목표 조향각
-            # throttle: 0.0 ~ 1.0 사이의 가속 명령
-            # brake: 0.0 ~ 1.0 사이의 제동 명령 (1.0이 최대 제동)
+            # 조향각 변환 (라디안 -> Xycar 각도 단위)
+            target_angle_deg = np.clip(math.degrees(steering_rad), -self.max_angle, self.max_angle)
 
-            # 1. 조향각 변환 (라디안 -> Xycar 각도 단위, -50 ~ 50)
-            # 차량의 전방을 기준으로 왼쪽이 +, 오른쪽이 - (Xycar 기준과 동일한지 확인 필요)
-            # 일반적으로 로봇공학에서는 반시계방향(좌회전)이 +
-            target_angle_deg = np.clip(math.degrees(steering), -self.max_angle, self.max_angle)
+            # 속도 변환 (m/s -> Xycar 속도 단위)
+            XYCAR_MPS_TO_SPEED_UNIT_FACTOR = self.config.get("xycar_mps_to_speed_unit_factor", 35.71) 
+            
+            target_xycar_speed = 0.0
+            if target_velocity_mps > 0.01: # 전진
+                target_xycar_speed = target_velocity_mps * XYCAR_MPS_TO_SPEED_UNIT_FACTOR
+            elif target_velocity_mps < -0.01: # 후진 (Xycar는 후진을 지원하지 않으므로, 0으로 처리하거나 경고)
+                logger.warning(f"VehicleInterface: Reverse speed ({target_velocity_mps} m/s) requested, but Xycar may not support reverse. Setting speed to 0.")
+                target_xycar_speed = 0.0
+            # else: 정지 (target_xycar_speed = 0.0)
+            
+            target_xycar_speed = np.clip(target_xycar_speed, self.min_speed, self.max_speed)
 
-            # 2. 속도 결정 (throttle, brake -> Xycar 속도 단위, 0 ~ 50)
-            target_speed = 0.0
-            if brake > 0.1: # 브레이크가 일정 값 이상이면 감속/정지
-                # 현재 속도에서 brake 값에 비례하여 감속하는 로직이 필요하나,
-                # XycarMotor는 목표 속도를 직접 지정하므로, 여기서는 정지 또는 낮은 속도로 설정
-                target_speed = self.min_speed # 또는 0으로 설정하여 정지
-            else: # 브레이크가 약하면 throttle 값에 따라 속도 설정
-                # throttle (0~1) 값을 Xycar 속도 (min_speed ~ max_speed)로 매핑
-                target_speed = self.min_speed + throttle * (self.max_speed - self.min_speed)
-            
-            target_speed = np.clip(target_speed, self.min_speed, self.max_speed)
-            
             self.motor_msg.angle = float(target_angle_deg)
-            self.motor_msg.speed = float(target_speed)
+            self.motor_msg.speed = float(target_xycar_speed)
             self.motor_publisher.publish(self.motor_msg)
+            print(f"VehicleInterface: Published to /xycar_motor - Angle: {self.motor_msg.angle:.2f}, Speed: {self.motor_msg.speed:.2f}")
             # logger.debug(f"VehicleInterface (ROS): Sent Angle: {self.motor_msg.angle:.2f}, Speed: {self.motor_msg.speed:.2f}") # Frequent
         else:
-            # 시뮬레이션 모드 또는 오류 처리
-            logger.info(f"VehicleInterface (Sim): Steering(rad): {steering:.2f}, Throttle: {throttle:.2f}, Brake: {brake:.2f}")
+            logger.info(f"VehicleInterface (Sim): Steering(rad): {steering_rad:.2f}, TargetVel(mps): {target_velocity_mps:.2f}")
 
 class ControlModule:
     def __init__(self, config: dict,
@@ -61,8 +67,13 @@ class ControlModule:
         self.config = config
         self.input_queue_planning = input_queue_planning
 
+        # 속도 변환 인수 설정 (Planning 모듈과 일치)
+        self.xycar_mps_to_speed_unit_factor = self.config.get("xycar_mps_to_speed_unit_factor", 35.71)
+
         self.active_law_name = self.config.get("active_control_law", "basic_pid") # Default strategy
         self.law_params = self.config.get(f"{self.active_law_name}_params", {})
+        
+        logger.info(f"ControlModule: Using speed conversion factor: {self.xycar_mps_to_speed_unit_factor}")
         logger.info(f"ControlModule: Active control law: {self.active_law_name} with params: {self.law_params}")
 
         self.law_map = {
@@ -96,85 +107,99 @@ class ControlModule:
             abs(action.target_velocity_mps - self.last_logged_velocity_mps) > self.LOG_VELOCITY_THRESHOLD_MPS or
             abs(action.target_steering_angle_rad - self.last_logged_steering_angle_rad) > self.LOG_ANGLE_THRESHOLD_RAD
         )
+        # Update logging thresholds from params, in case they changed
+        self.LOG_VELOCITY_THRESHOLD_MPS = params.get("log_velocity_threshold_mps", 0.05)
+        self.LOG_ANGLE_THRESHOLD_RAD = params.get("log_angle_threshold_rad", 0.005)
+
         if should_log:
             logger.debug(f"BasicPIDControl: Translating action: Vel={action.target_velocity_mps:.2f} m/s, Angle={action.target_steering_angle_rad:.3f} rad")
             self.last_logged_velocity_mps = action.target_velocity_mps
             self.last_logged_steering_angle_rad = action.target_steering_angle_rad
-        # Example: Proportional control (very basic)
-        # Assume current speed is 0 for simplicity or needs feedback
-        throttle_command = 0.0
-        brake_command = 0.0
-
-        # target_velocity_mps를 throttle/brake로 변환 (0~1 범위)
-        # 이 로직은 차량 모델과 제어 전략에 따라 매우 달라질 수 있음.
-        # 여기서는 간단한 비례 제어를 가정.
-        max_module_speed_mps = params.get("max_control_speed_mps", 1.4) # m/s 단위의 최대 제어 속도
-        
-        if action.target_velocity_mps > 0.05: # 전진
-            throttle_command = np.clip(action.target_velocity_mps / max_module_speed_mps, 0.0, 1.0)
-        elif action.target_velocity_mps < -0.05: # 후진 또는 강한 제동 (Xycar는 후진 기능이 별도로 없음)
-            brake_command = np.clip(abs(action.target_velocity_mps) / max_module_speed_mps, 0.0, 1.0)
-        else: # 정지 또는 매우 낮은 속도
-            brake_command = 0.2 # 약한 브레이크로 정지 유지 시도
-        steering_command = action.target_steering_angle_rad # Pass through steering angle
 
         return ControlActuatorCommands(
             timestamp=action.timestamp,
-            steering_command=steering_command,
-            throttle_command=throttle_command,
-            brake_command=brake_command
+            steering_command_rad=action.target_steering_angle_rad,
+            target_velocity_mps=action.target_velocity_mps
         )
 
     def _execute_vehicle_model_pid(self, action: ActionCommand, params: dict) -> ControlActuatorCommands:
-        # logger.debug(f"VehicleModelPID: Translating action with params: {params}")
-        # 이 부분은 실제 차량 모델을 고려한 PID 제어 로직이 필요합니다.
-        # 예: Longitudinal PID (속도 제어) + Lateral PID (조향 제어 - Stanley, Pure Pursuit 등)
+        logger.debug(f"VehicleModelPID: Action: Vel={action.target_velocity_mps:.2f}, Angle={action.target_steering_angle_rad:.3f}. Params: {params}")
+
+        kp_speed = params.get("kp_speed", 0.8)
+        kp_steer_lat = params.get("kp_steer_lat", 0.7) # Using lateral P-gain for steering
         
-        # Longitudinal PID (단순 P 제어 예시)
-        # current_speed_mps = ... # 차량으로부터 피드백 필요 (현재는 없음)
-        # speed_error = action.target_velocity_mps - current_speed_mps
-        # throttle_command = params.get("kp_speed", 0.8) * speed_error
-        # throttle_command = np.clip(throttle_command, 0.0, 1.0)
-        # brake_command = 0.0 if throttle_command > 0 else 0.1 # 단순화
+        # For this P-controller, target_velocity_mps from ActionCommand is the direct target.
+        # A more complex PID would calculate an error (target_velocity - current_velocity)
+        # and then determine throttle/brake. Here, we assume ActionCommand's velocity is the desired output.
+        final_target_velocity_mps = action.target_velocity_mps * kp_speed # Apply P-gain to velocity
 
-        # Lateral PID (단순 P 제어 예시 - 목표 조향각 직접 사용)
-        # steering_command_rad = action.target_steering_angle_rad # 목표 조향각
-        # 실제로는 CTE(Cross-Track Error)와 Yaw Error를 사용한 제어
-        # cte = ... # Localization과 Path 정보로부터 계산
-        # yaw_error = ...
-        # steering_command_rad = params.get("kp_steer_lat") * cte + params.get("kp_steer_yaw") * yaw_error
-        
-        logger.info("VehicleModelPID: Placeholder - 실제 차량 모델 기반 PID 로직 구현 필요.")
-        # 기본 basic_pid와 유사하게 동작하도록 임시 설정
-        return self._execute_basic_pid_control(action, self.config.get("basic_pid_params", {}))
+        # --- Speed Control (P-controller) ---
+        # The `final_target_velocity_mps` will be passed to VehicleInterface,
+        # which will convert it to Xycar speed units.
+        # No explicit throttle/brake calculation here, as we output target velocity.
+
+        # --- Steering Control (P-controller) ---
+        # Assuming target_steering_angle_rad is the desired steering output after high-level planning
+        # A more complex model would use CTE (Cross-Track Error) and Yaw Error.
+        # Here, we directly use the target_steering_angle_rad as if it's an "error" or desired output.
+        steering_command_rad = action.target_steering_angle_rad * kp_steer_lat # Apply P gain
+
+        logger.debug(f"VehicleModelPID Output: Steer(rad)={steering_command_rad:.3f}, TargetVel(mps)={final_target_velocity_mps:.2f}")
+        return ControlActuatorCommands(
+            timestamp=action.timestamp,
+            steering_command_rad=steering_command_rad,
+            target_velocity_mps=final_target_velocity_mps
+        )
 
 
+    @performance_timing
     def run(self):
-        logger.info(f"ControlModule: Thread started. Control Law: {self.active_law_name}")
+        print("[CONTROL] run() 진입", flush=True)
+        logger.info(f"ControlModule: Thread started. Active control law: {self.active_law_name}")
         selected_law_method = self.law_map.get(self.active_law_name)
 
         while self._running:
+            print("[CONTROL] run() 루프 진입, 큐 get 시도", flush=True)
             try:
-                action_command: ActionCommand = self.input_queue_planning.get(timeout=1.0)
+                # 우선순위 큐에서 액션 커맨드 수신
+                queue_item = self.input_queue_planning.get(timeout=1.0)
+                print(f"ControlModule: Got action command from planning queue", flush=True)
+                # PriorityQueueItem에서 실제 데이터 추출
+                if isinstance(queue_item, tuple) and len(queue_item) == 3:
+                    # (priority_value, timestamp, data) 형태
+                    _, _, action_command = queue_item
+                elif hasattr(queue_item, 'data'):
+                    # PriorityQueueItem 객체
+                    action_command = queue_item.data
+                else:
+                    # 직접 ActionCommand 객체
+                    action_command = queue_item
+                print(f"ControlModule: Received action command - speed: {getattr(action_command, 'target_speed_kph', 0):.2f} kph, steering: {getattr(action_command, 'steering_angle_deg', 0):.2f} deg", flush=True)
+                    
                 if selected_law_method:
                     control_commands = selected_law_method(action_command, self.law_params)
                     self.vehicle_interface.send_commands(
-                        control_commands.steering_command,
-                        control_commands.throttle_command,
-                        control_commands.brake_command
+                        steering_rad=control_commands.steering_command_rad,
+                        target_velocity_mps=control_commands.target_velocity_mps
                     )
+                    performance_tracker.record_metric("commands_processed", 1)
                 else:
                     logger.warning(f"ControlModule: Control law '{self.active_law_name}' not found.")
-                    # Fallback: send zero commands or hold last command? For safety, maybe zero.
-                    self.vehicle_interface.send_commands(steering=0.0, throttle=0.0, brake=0.2) # Gentle brake
-
+                    # Fallback: send zero commands for safety
+                    self.vehicle_interface.send_commands(steering_rad=0.0, target_velocity_mps=0.0)
+                    performance_tracker.record_metric("fallback_commands", 1)
+                
                 self.input_queue_planning.task_done()
-            except queue.Empty:
+                
+            except (queue.Empty, _queue.Empty):
                 if not self._running:
                     break
+                performance_tracker.record_metric("timeout_events", 1)
                 continue
             except Exception as e:
                 logger.error(f"ControlModule: Error processing command: {e}", exc_info=True)
+                performance_tracker.record_metric("error_events", 1)
+                
         logger.info("ControlModule: Thread stopped.")
 
     def start(self):
@@ -182,11 +207,4 @@ class ControlModule:
             self._running = True
             self._thread = threading.Thread(target=self.run, name="ControlThread")
             self._thread.start()
-            logger.info("ControlModule: Started.")
-
-    def stop(self):
-        if self._running:
-            self._running = False
-            if self._thread:
-                self._thread.join(timeout=2.0)
-            logger.info("ControlModule: Stopped.")
+            logger.info(f"ControlModule: Started. Active control law: {self.active_law_name}")
