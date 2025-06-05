@@ -7,6 +7,7 @@ from sensor_msgs.msg import Image as RosImage # ROS Image 메시지
 from sensor_msgs.msg import LaserScan
 import logging
 from cv_bridge import CvBridge # CvBridge 사용 (선언만 하고 실제 인스턴스는 외부에서 주입받도록 수정)
+from .error_manager import error_manager, ErrorCode
 
 class SensorInputManager:
     def __init__(self, config: dict, output_queue: queue.Queue, ros_bridge: CvBridge = None):
@@ -40,14 +41,16 @@ class SensorInputManager:
                 self.latest_image_data = cv_image
                 self.image_timestamp = data.header.stamp.to_sec()
         except Exception as e:
-            print(f"SensorInputManager: Error converting ROS Image: {e}")
+            error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, f"ROS Image: {e}")
             logging.error(f"SensorInputManager: Error converting ROS Image: {e}")
 
     def _ros_lidar_callback(self, data: LaserScan):
-        with self.lock:
-            # Process or store raw ranges as needed by PerceptionModule
-            self.latest_lidar_data = list(data.ranges[0:360]) # 예시: 0-359도 범위 사용
-            self.lidar_timestamp = data.header.stamp.to_sec()
+        try:
+            with self.lock:
+                self.latest_lidar_data = list(data.ranges[0:360]) # 예시: 0-359도 범위 사용
+                self.lidar_timestamp = data.header.stamp.to_sec()
+        except Exception as e:
+            error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, f"ROS Lidar: {e}")
 
     def _publish_sensor_data_loop(self):
         """ Periodically checks for new data and puts it on the queue. """

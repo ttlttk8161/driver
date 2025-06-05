@@ -2,30 +2,19 @@ import queue
 import threading
 import time
 from typing import Optional, Dict, Tuple, List, Any
-from .data_structures import SensorData, PerceptionOutput, LocalizationInfo # HDMapInterface는 이 파일에 정의됨
+from .data_structures import SensorData, PerceptionOutput, LocalizationInfo
+from .error_manager import error_manager, ErrorCode
 import logging
 
 # Get a logger for this module
 logger = logging.getLogger(__name__)
 
-# Dummy HDMapInterface for now
-class HDMapInterface:
-    def __init__(self, map_path: str):
-        self.map_path = map_path
-        logger.info(f"HDMapInterface: Initialized with map {map_path}")
-
-    def get_local_map_data(self, position: tuple, extent: float) -> Any:
-        # logger.debug(f"HDMapInterface: Queried local map at {position} with extent {extent}") # Debug level for frequent calls
-        return {"lanes": "sample_lane_data", "intersections": "sample_intersection_data"}
-
-
 class LocalizationModule:
-    def __init__(self, config: dict, hd_map_path: str,
+    def __init__(self, config: dict,
                  input_queue_perception: queue.Queue,
                  input_queue_sensor: Optional[queue.Queue], # For direct GNSS/IMU
                  output_queues: Dict[str, queue.Queue]):
         self.config = config
-        self.hd_map = HDMapInterface(hd_map_path)
         self.input_queue_perception = input_queue_perception
         self.input_queue_sensor = input_queue_sensor # Can be None if sensors go via perception
         self.output_queues = output_queues # e.g., {"prediction": q_pred, "planning": q_plan}
@@ -85,57 +74,64 @@ class LocalizationModule:
     def run(self):
         logger.info(f"LocalizationModule: Thread started. Strategy: {self.active_strategy_name}")
         selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
-
-        while self._running:
-            perception_data = None
-            sensor_data_direct = None
-            processed_something = False
-
-            # Prioritize perception data if available
-            try:
-                perception_data = self.input_queue_perception.get(block=False)
-                processed_something = True
-            except queue.Empty:
-                pass # No perception data this cycle
-
-            if self.input_queue_sensor:
+        try:
+            while self._running:
+                perception_data = None
+                sensor_data_direct = None
+                processed_something = False
                 try:
-                    sensor_data_direct = self.input_queue_sensor.get(block=False)
+                    perception_data = self.input_queue_perception.get(block=False)
                     processed_something = True
                 except queue.Empty:
-                    pass # No direct sensor data this cycle
+                    pass # No perception data this cycle
 
-            if processed_something:
-                if selected_strategy_method:
-                    localization_output = selected_strategy_method(perception_data, sensor_data_direct, self.strategy_params)
-                    for key, q in self.output_queues.items():
-                        try:
-                            q.put(localization_output, timeout=0.1)
-                        except queue.Full:
-                             logging.warning(f"LocalizationModule: Output queue '{key}' is full.")
-                else:
-                    logger.warning(f"LocalizationModule: Strategy '{self.active_strategy_name}' not found in strategy_map.")
-                    # Potentially sleep or handle error
-                if perception_data: self.input_queue_perception.task_done()
-                if sensor_data_direct and self.input_queue_sensor: self.input_queue_sensor.task_done()
+                if self.input_queue_sensor:
+                    try:
+                        sensor_data_direct = self.input_queue_sensor.get(block=False)
+                        processed_something = True
+                    except queue.Empty:
+                        pass # No direct sensor data this cycle
 
-            if not processed_something:
-                time.sleep(0.01) # Avoid busy waiting if no data
-            if not self._running and self.input_queue_perception.empty() and (not self.input_queue_sensor or self.input_queue_sensor.empty()):
-                break # Exit condition
+                if processed_something:
+                    if selected_strategy_method:
+                        localization_output = selected_strategy_method(perception_data, sensor_data_direct, self.strategy_params)
+                        for key, q in self.output_queues.items():
+                            try:
+                                q.put(localization_output, timeout=0.1)
+                            except queue.Full:
+                                 logging.warning(f"LocalizationModule: Output queue '{key}' is full.")
+                    else:
+                        logger.warning(f"LocalizationModule: Strategy '{self.active_strategy_name}' not found in strategy_map.")
+                        # Potentially sleep or handle error
+                    if perception_data: self.input_queue_perception.task_done()
+                    if sensor_data_direct and self.input_queue_sensor: self.input_queue_sensor.task_done()
 
-        logger.info("LocalizationModule: Thread stopped.")
+                if not processed_something:
+                    time.sleep(0.01) # Avoid busy waiting if no data
+                if not self._running and self.input_queue_perception.empty() and (not self.input_queue_sensor or self.input_queue_sensor.empty()):
+                    break # Exit condition
+
+            logger.info("LocalizationModule: Thread stopped.")
+        except Exception as e:
+            error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
 
     def start(self):
         if not self._running:
             self._running = True
-            self._thread = threading.Thread(target=self.run, name="LocalizationThread")
-            self._thread.start()
-            logger.info("LocalizationModule: Started.")
+            try:
+                self._thread = threading.Thread(target=self.run, name="LocalizationThread")
+                self._thread.start()
+                logger.info("LocalizationModule: Started.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_START_FAIL, str(e))
+                raise
 
     def stop(self):
         if self._running:
             self._running = False
-            if self._thread:
-                self._thread.join(timeout=2.0)
-            logger.info("LocalizationModule: Stopped.")
+            try:
+                if self._thread:
+                    self._thread.join(timeout=2.0)
+                logger.info("LocalizationModule: Stopped.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))

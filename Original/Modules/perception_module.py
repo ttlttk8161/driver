@@ -3,6 +3,8 @@ import queue
 import threading
 import time
 from .data_structures import SensorData, PerceptionOutput, WhiteLineHsvMetrics, YellowLineHsvMetrics # 필요한 데이터 구조 import
+from .error_manager import error_manager, ErrorCode
+from .Visualize import PerceptionVisualizer  # HSV 차선 감지 시각화를 위한 import
 
 # 로깅 설정 (애플리케이션의 다른 부분에서 이미 설정되었을 수 있습니다)
 # 예: logging.basicConfig(level=logging.INFO)
@@ -29,9 +31,11 @@ class PerceptionModule:
         self.active_perception_algorithm = detection_config.get('active_perception_algorithm')
         self.debug_cv_show = detection_config.get('debug_cv_show', False) # cv2.imshow 사용 여부
         
+        # HSV 차선 감지 시각화 초기화
+        self.perception_visualizer = PerceptionVisualizer(debug_enabled=self.debug_cv_show)
+        
         # 각 알고리즘에 대한 파라미터를 저장합니다.
         self.params = {}
-        # task.md에 명시된 파라미터 블록들을 로드합니다.
         # 실제 알고리즘 실행 시 해당 메소드에 전달됩니다.
         self.params['hsv_lane_detection'] = detection_config.get('hsv_lane_detection_params', {})
         self.params['canny_hough_lane_detection'] = detection_config.get('canny_hough_lane_detection_params', {})
@@ -99,21 +103,141 @@ class PerceptionModule:
 
     def _execute_hsv_lane_detection(self, image, params) -> dict:
         """
-        HSV 차선 감지 알고리즘 예시 플레이스홀더입니다.
+        HSV 차선 감지 알고리즘 - steering_balancing.py 로직 기반
         Args:
             image: 입력 이미지입니다.
             params (dict): 이 알고리즘을 위한 파라미터입니다 (예: hsv_lane_detection_params).
         Returns:
             dict: 인식 결과를 담은 딕셔너리 (예: {"white_line_hsv_metrics": WhiteLineHsvMetrics(...), ...})
         """
-        # logger.debug(f"Running _execute_hsv_lane_detection with params: {params}")
-        # 여기에 실제 HSV 차선 감지 로직을 구현합니다.
-        # 예: h_min = params.get('h_min', 0)
-        # 실제로는 WhiteLineHsvMetrics, YellowLineHsvMetrics 등을 계산하여 반환해야 합니다.
-        # 예시로 빈 메트릭 반환
+        import cv2
+        import numpy as np
+        
+        # 파라미터 읽기
+        roi_y_start_ratio = params.get('roi_y_start_ratio', 0.6)
+        lower_white_hsv = params.get('lower_white_hsv', [0, 0, 180])
+        upper_white_hsv = params.get('upper_white_hsv', [180, 30, 255])
+        lower_yellow_hsv = params.get('lower_yellow_hsv', [20, 100, 100])
+        upper_yellow_hsv = params.get('upper_yellow_hsv', [30, 255, 255])
+        white_pixel_threshold = params.get('white_pixel_threshold', 300)
+        yellow_area_threshold = params.get('yellow_area_threshold', 100)
+        
+        # ROI 설정 (하단 40% 영역)
+        height, width = image.shape[:2]
+        roi_y_start = int(height * roi_y_start_ratio)
+        roi_image = image[roi_y_start:, :]  # ROI 이미지 저장 (시각화용)
+        
+        # HSV 변환
+        hsv = cv2.cvtColor(roi_image, cv2.COLOR_BGR2HSV)
+        
+        # 흰색 차선 감지
+        lower_white = np.array(lower_white_hsv)
+        upper_white = np.array(upper_white_hsv)
+        white_mask = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # 노란색 차선 감지
+        lower_yellow = np.array(lower_yellow_hsv)
+        upper_yellow = np.array(upper_yellow_hsv)
+        yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        
+        # 흰색 차선 분석
+        roi_height, roi_width = white_mask.shape
+        left_mask = white_mask[:, :roi_width//3]
+        mid_mask = white_mask[:, roi_width//3:2*roi_width//3]
+        right_mask = white_mask[:, 2*roi_width//3:]
+        
+        left_ratio = cv2.countNonZero(left_mask) / left_mask.size
+        mid_ratio = cv2.countNonZero(mid_mask) / mid_mask.size
+        right_ratio = cv2.countNonZero(right_mask) / right_mask.size
+        total_white = cv2.countNonZero(white_mask)
+        
+        # 흰색 차선 감지 여부
+        white_detected = total_white > white_pixel_threshold
+        
+        # 노란색 차선 분석
+        yellow_moments = cv2.moments(yellow_mask)
+        yellow_area = yellow_moments['m00']
+        yellow_center_x = None
+        yellow_detected = False
+        
+        if yellow_area > yellow_area_threshold:
+            yellow_center_x = int(yellow_moments['m10'] / yellow_moments['m00'])
+            yellow_detected = True
+        
+        # 메트릭 생성
+        white_metrics = WhiteLineHsvMetrics(
+            timestamp=time.time(),
+            total_white_pixels=total_white,
+            left_ratio=left_ratio,
+            mid_ratio=mid_ratio,
+            right_ratio=right_ratio,
+            is_detected=white_detected
+        )
+        
+        yellow_metrics = YellowLineHsvMetrics(
+            timestamp=time.time(),
+            area=yellow_area,
+            center_x=yellow_center_x,
+            is_detected=yellow_detected
+        )
+        
+        # ROI 하단 10줄에서 차선 x좌표 추출
+        lane_boundaries_x = []
+        roi_bottom = white_mask[-10:, :]  # 하단 10줄
+        # 흰색 실선(좌/우) x좌표
+        white_indices = np.where(np.sum(roi_bottom, axis=0) > 0)[0]
+        if len(white_indices) > 0:
+            left_white_x = int(white_indices[0])
+            right_white_x = int(white_indices[-1])
+            lane_boundaries_x.append(left_white_x)
+        # 노란색 점선 x좌표(여러 개 가능)
+        yellow_bottom = yellow_mask[-10:, :]
+        yellow_indices = np.where(np.sum(yellow_bottom, axis=0) > 0)[0]
+        # 노란선이 흰선과 겹칠 수 있으므로, 흰선 경계 바깥만 추출
+        yellow_xs = []
+        if len(yellow_indices) > 0:
+            for x in yellow_indices:
+                # 흰선 경계 바깥은 제외
+                if (len(white_indices) == 0) or (x > left_white_x + 10 and x < right_white_x - 10):
+                    yellow_xs.append(int(x))
+        lane_boundaries_x.extend(yellow_xs)
+        if len(white_indices) > 0:
+            lane_boundaries_x.append(right_white_x)
+        lane_boundaries_x = sorted(list(set(lane_boundaries_x)))
+        
+        # HSV 차선 감지 시각화 (새로운 Visualize.py 사용)
+        if self.debug_cv_show:
+            # 메트릭을 딕셔너리 형태로 변환 (PerceptionVisualizer 호환)
+            white_metrics_dict = {
+                'is_detected': white_metrics.is_detected,
+                'total_white_pixels': white_metrics.total_white_pixels,
+                'left_ratio': white_metrics.left_ratio,
+                'mid_ratio': white_metrics.mid_ratio,
+                'right_ratio': white_metrics.right_ratio
+            }
+            
+            yellow_metrics_dict = {
+                'is_detected': yellow_metrics.is_detected,
+                'area': yellow_metrics.area,
+                'center_x': yellow_metrics.center_x
+            }
+            
+            # PerceptionVisualizer를 통한 HSV 차선 감지 시각화
+            self.perception_visualizer.visualize_hsv_lane_detection(
+                white_mask=white_mask,
+                yellow_mask=yellow_mask,
+                roi_image=roi_image,
+                white_metrics=white_metrics_dict,
+                yellow_metrics=yellow_metrics_dict
+            )
+        
+        logger.debug(f"HSV Detection - White: detected={white_detected}, pixels={total_white}, ratios=L:{left_ratio:.3f} M:{mid_ratio:.3f} R:{right_ratio:.3f}")
+        logger.debug(f"HSV Detection - Yellow: detected={yellow_detected}, area={yellow_area}, center_x={yellow_center_x}")
+        
         return {
-            "white_line_hsv_metrics": WhiteLineHsvMetrics(time.time(), 0, 0,0,0, False),
-            "yellow_line_hsv_metrics": YellowLineHsvMetrics(time.time(), 0, None, False)
+            "white_line_hsv_metrics": white_metrics,
+            "yellow_line_hsv_metrics": yellow_metrics,
+            "lane_boundaries_x": lane_boundaries_x
         }
 
     def _execute_canny_hough_lane_detection(self, image, params) -> dict:
@@ -133,35 +257,49 @@ class PerceptionModule:
         return {} # 빈 결과 반환
 
     def run(self):
-        logger.info(f"PerceptionModule: Thread started. Active algorithm: {self.active_perception_algorithm}")
-        while self._running:
-            try:
-                sensor_data: SensorData = self.input_queue_sensor_data.get(timeout=1.0)
-                perception_output = self._process_sensor_data(sensor_data)
-                
-                for key, q in self.output_queues.items():
+        logger.info("PerceptionModule: Thread started.")
+        try:
+            while self._running:
+                try:
+                    sensor_data = self.input_queue_sensor_data.get(block=False)
+                except queue.Empty:
+                    sensor_data = None
+                if sensor_data:
                     try:
-                        q.put(perception_output, timeout=0.1)
-                    except queue.Full:
-                        logger.warning(f"PerceptionModule: Output queue '{key}' is full. Discarding data.")
-                self.input_queue_sensor_data.task_done()
-            except queue.Empty:
-                if not self._running:
-                    break
-            except Exception as e:
-                logger.error(f"PerceptionModule: Error processing sensor data: {e}", exc_info=True)
-        logger.info("PerceptionModule: Thread stopped.")
+                        output = self._process_sensor_data(sensor_data)
+                        for key, q in self.output_queues.items():
+                            try:
+                                q.put(output, timeout=0.1)
+                            except queue.Full:
+                                logger.warning(f"PerceptionModule: Output queue '{key}' is full.")
+                    except Exception as e:
+                        error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
+                time.sleep(0.01)
+            logger.info("PerceptionModule: Thread stopped.")
+        except Exception as e:
+            error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
 
     def start(self):
         if not self._running:
             self._running = True
-            self._thread = threading.Thread(target=self.run, name="PerceptionThread")
-            self._thread.start()
-            logger.info("PerceptionModule: Started.")
+            try:
+                self._thread = threading.Thread(target=self.run, name="PerceptionThread")
+                self._thread.start()
+                logger.info("PerceptionModule: Started.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_START_FAIL, str(e))
+                raise
 
     def stop(self):
         if self._running:
             self._running = False
-            if self._thread:
-                self._thread.join(timeout=2.0)
-            logger.info("PerceptionModule: Stopped.")
+            try:
+                # 시각화 리소스 정리
+                if hasattr(self, 'perception_visualizer'):
+                    self.perception_visualizer.cleanup()
+                
+                if self._thread:
+                    self._thread.join(timeout=2.0)
+                logger.info("PerceptionModule: Stopped.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))

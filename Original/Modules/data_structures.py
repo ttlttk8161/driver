@@ -1,4 +1,5 @@
 from typing import NamedTuple, List, Any, Tuple, Optional, Dict
+from dataclasses import dataclass, field
 
 class SensorData(NamedTuple):
     timestamp: float
@@ -56,6 +57,7 @@ class PerceptionOutput(NamedTuple):
     raw_features_for_localization: Optional[Any]
     white_line_hsv_metrics: Optional[WhiteLineHsvMetrics]
     yellow_line_hsv_metrics: Optional[YellowLineHsvMetrics]
+    lane_boundaries_x: Optional[List[int]] = None
 
 class LocalizationInfo(NamedTuple):
     timestamp: float
@@ -83,11 +85,12 @@ class ManeuverDecision(NamedTuple):
     target_speed_kph: float
     lead_vehicle_id: Optional[int]
 
-class ActionCommand(NamedTuple):
+@dataclass
+class ActionCommand:
     timestamp: float
     target_velocity_mps: float
     target_steering_angle_rad: float # Or curvature
-    # Could also include acceleration/braking commands
+    planning_results: Optional[Dict] = field(default=None)
 
 class ControlActuatorCommands(NamedTuple):
     timestamp: float

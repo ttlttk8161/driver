@@ -6,17 +6,16 @@ from .data_structures import (
     LocalizationInfo, BehavioralPredictionOutput, PerceptionOutput,
     PlannedPath, ManeuverDecision, ActionCommand
 )
-from .localization_module import HDMapInterface # HDMapInterface from localization_module
 import numpy as np
 import math # math 모듈 추가
 import logging
+from .error_manager import error_manager, ErrorCode
 
 logger = logging.getLogger(__name__)
 
 class PathPlannerComponent:
-    def __init__(self, config: dict, hd_map_interface: HDMapInterface):
+    def __init__(self, config: dict):
         self.config = config
-        self.hd_map = hd_map_interface
         self.active_strategy_name = self.config.get("active_strategy", "simple_waypoint_planner")
         self.strategy_params = self.config.get(f"{self.active_strategy_name}_params", {})
         self.strategy_map = {
@@ -188,19 +187,23 @@ class ActionPlannerComponent:
         # 속도 결정 (Xycar 단위) - steering_balancing.py 기준
         abs_angle_deg = abs(angle_deg)
         if "NO_LINE" in current_log or "FALLBACK" in current_log: # steering_balancing.py: "HOLD" or "NO LINE"
-            speed_xycar = self.speed_config_xycar_units["no_line_or_fallback"]
+            # config에 맞는 키로 fallback (KeyError 방지, alias 지원)
+            speed_xycar = (
+                self.speed_config_xycar_units.get("no_line_or_fallback") or
+                self.speed_config_xycar_units.get("fallback") or
+                self.speed_config_xycar_units.get("no_line") or
+                20  # 최후의 fallback
+            )
         elif abs_angle_deg < 5:
-            speed_xycar = self.speed_config_xycar_units["straight"]
+            speed_xycar = self.speed_config_xycar_units.get("straight", 45)
         elif abs_angle_deg < 10:
-            speed_xycar = self.speed_config_xycar_units["gentle_turn"]
+            speed_xycar = self.speed_config_xycar_units.get("gentle_turn", 35)
         else:
-            speed_xycar = self.speed_config_xycar_units["sharp_turn"]
-            
+            speed_xycar = self.speed_config_xycar_units.get("sharp_turn", 25)
+        
         return angle_deg, speed_xycar, current_log
 
-    def plan_action(self, current_pose: LocalizationInfo, decision: ManeuverDecision, 
-                      planned_path: PlannedPath, perception_info: PerceptionOutput, 
-                      image_width: int = 640) -> ActionCommand:
+    def plan_action(self, current_pose, decision, planned_path, perception_info, image_width=640):
         
         self.frame_counter += 1
         target_steering_deg = 0.0
@@ -224,7 +227,12 @@ class ActionPlannerComponent:
             # HSV 메트릭이 없는 경우 (예: Perception 모듈에서 아직 준비되지 않음) -> 이전 Canny 로직 또는 기본값 사용
             # 여기서는 steering_balancing.py 통합에 집중하므로, 기본값(직진 또는 이전 값 유지)으로 설정
             target_steering_deg = math.degrees(self.prev_steering_angle_rad) # 이전 각도 유지 시도
-            target_speed_xycar_units = self.speed_config_xycar_units["no_line_or_fallback"] # 안전 속도
+            target_speed_xycar_units = (
+                self.speed_config_xycar_units.get("no_line_or_fallback") or
+                self.speed_config_xycar_units.get("fallback") or
+                self.speed_config_xycar_units.get("no_line") or
+                20
+            ) # 안전 속도
             log_info = "[NO_HSV_METRICS_FALLBACK]"
 
         # 최종 조향각(도)을 라디안으로 변환
@@ -239,114 +247,85 @@ class ActionPlannerComponent:
         # 않거나, `perception_info.white_line_hsv_metrics`와 `perception_info.yellow_line_hsv_metrics`가 `None`으로 전달되고 있다는 의미입니다.
         logger.debug(f"ActionPlanner: Mode: {log_info}, Angle(deg): {target_steering_deg:.2f}, Speed(xycar): {target_speed_xycar_units}, Vel(mps): {target_velocity_mps:.2f}")
 
-        return ActionCommand(
+        # planning_results 딕셔너리 생성
+        planning_results = {
+            "perception_info": perception_info,
+            "localization_info": current_pose,
+            "planned_path": planned_path,
+            "maneuver_decision": decision
+        }
+
+        action_cmd = ActionCommand(
             timestamp=current_pose.timestamp,
             target_velocity_mps=target_velocity_mps,
-            target_steering_angle_rad=target_steering_rad
+            target_steering_angle_rad=target_steering_rad,
+            planning_results=planning_results
         )
+        
+        return action_cmd
 
 class PlanningModule:
-    def __init__(self, planning_specific_config: dict, # Renamed from 'config'
-                 hd_map_path: str,
-                 overall_system_config: dict, # Renamed from 'overall_config'
-                 input_queues: Dict[str, queue.Queue], # {"localization": q_loc, "prediction": q_pred, "perception": q_perc}
+    def __init__(self, planning_specific_config: dict,
+                 overall_system_config: dict,
+                 input_queues: Dict[str, queue.Queue],
                  output_queue_control: queue.Queue):
-        self.planning_config = planning_specific_config # Store planning specific settings
-        self.hd_map = HDMapInterface(hd_map_path) # Re-use or pass instance
-
-        # Use planning_specific_config for sub-components
-        self.path_planner = PathPlannerComponent(self.planning_config.get("path_planner", {}), self.hd_map)
+        self.planning_config = planning_specific_config
+        self.path_planner = PathPlannerComponent(self.planning_config.get("path_planner", {}))
         self.decision_maker = DecisionMakerComponent(self.planning_config.get("decision_maker", {}))
         self.action_planner = ActionPlannerComponent(self.planning_config.get("action_planner", {}))
-        
-        # Use overall_system_config for global settings like image_width
         self.image_width = overall_system_config.get("image_width", 640)
-
-        self.input_queue_localization = input_queues["localization"]
-        self.input_queue_prediction = input_queues["prediction"]
-        self.input_queue_perception = input_queues["perception"] # For static scene info, traffic lights etc.
+        self.input_queues = input_queues
         self.output_queue_control = output_queue_control
-
-        self._latest_localization: Optional[LocalizationInfo] = None
-        self._latest_prediction: Optional[BehavioralPredictionOutput] = None
-        self._latest_perception: Optional[PerceptionOutput] = None
-
         self._running = False
         self._thread = None
         logger.info("PlanningModule: Initialized.")
 
     def run(self):
         logger.info("PlanningModule: Thread started.")
-        while self._running:
-            # Fetch latest data from all input queues (non-blocking)
-            try:
-                self._latest_localization = self.input_queue_localization.get(block=False)
-                self.input_queue_localization.task_done()
-            except queue.Empty: pass
-
-            try:
-                self._latest_prediction = self.input_queue_prediction.get(block=False)
-                self.input_queue_prediction.task_done()
-            except queue.Empty: pass
-
-            try:
-                self._latest_perception = self.input_queue_perception.get(block=False)
-                self.input_queue_perception.task_done()
-            except queue.Empty: pass
-
-            # Only proceed if we have essential data (at least localization)
-            if self._latest_localization and self._latest_prediction and self._latest_perception :
-                current_time = time.time()
-                # Check data freshness (optional, for simplicity not implemented here)
-                # if abs(current_time - self._latest_localization.timestamp) > STALE_THRESHOLD: continue etc.
-
-                # logger.debug(f"PlanningModule: Processing with Loc_ts={self._latest_localization.timestamp}, Pred_ts={self._latest_prediction.timestamp}, Perc_ts={self._latest_perception.timestamp}")
-
-                # 1. Path Planning
-                planned_path = self.path_planner.plan_path(
-                    self._latest_localization, self._latest_perception, self._latest_prediction, self.image_width
-                )
-
-                # 2. Decision Making
-                maneuver_decision = self.decision_maker.make_decision(
-                    self._latest_localization, planned_path, self._latest_prediction, self._latest_perception
-                )
-                # 3. Action Planning
-                action_command = self.action_planner.plan_action(
-                    self._latest_localization, maneuver_decision, planned_path, self._latest_perception, self.image_width
-                )
-
+        try:
+            while self._running:
                 try:
-                    self.output_queue_control.put(action_command, timeout=0.1)
-                except queue.Full:
-                    logging.warning("PlanningModule: Control output queue full.")
-
-                # Clear latest data to ensure new data is used next cycle, or manage timestamps carefully
-                # self._latest_localization = None # Or rely on overwriting by new queue items
-                # self._latest_prediction = None
-                # self._latest_perception = None
-            else:
-                # Wait if essential data is missing
-                time.sleep(0.02) # Avoid busy-wait
-            
-            if not self._running: # Check running flag again before sleeping
-                break
-            # Add a small sleep if no data was processed to avoid tight loop if all queues are empty
-            if not (self._latest_localization and self._latest_prediction and self._latest_perception):
-                time.sleep(0.01) # Small sleep if waiting for data
-
-        logger.info("PlanningModule: Thread stopped.")
+                    localization_info = self.input_queues["localization"].get(block=False)
+                except queue.Empty:
+                    localization_info = None
+                try:
+                    prediction_info = self.input_queues["prediction"].get(block=False)
+                except queue.Empty:
+                    prediction_info = None
+                try:
+                    perception_info = self.input_queues["perception"].get(block=False)
+                except queue.Empty:
+                    perception_info = None
+                if localization_info and perception_info:
+                    planned_path = self.path_planner.plan_path(localization_info, perception_info, prediction_info, self.image_width)
+                    maneuver_decision = self.decision_maker.make_decision(localization_info, planned_path, prediction_info, perception_info)
+                    action_command = self.action_planner.plan_action(localization_info, maneuver_decision, planned_path, perception_info, self.image_width)
+                    try:
+                        self.output_queue_control.put(action_command, timeout=0.1)
+                    except queue.Full:
+                        logger.warning("PlanningModule: Output queue is full.")
+                time.sleep(0.01)
+            logger.info("PlanningModule: Thread stopped.")
+        except Exception as e:
+            error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
 
     def start(self):
         if not self._running:
             self._running = True
-            self._thread = threading.Thread(target=self.run, name="PlanningThread")
-            self._thread.start()
-            logger.info("PlanningModule: Started.")
+            try:
+                self._thread = threading.Thread(target=self.run, name="PlanningThread")
+                self._thread.start()
+                logger.info("PlanningModule: Started.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_START_FAIL, str(e))
+                raise
 
     def stop(self):
         if self._running:
             self._running = False
-            if self._thread:
-                self._thread.join(timeout=2.0)
-            logger.info("PlanningModule: Stopped.")
+            try:
+                if self._thread:
+                    self._thread.join(timeout=2.0)
+                logger.info("PlanningModule: Stopped.")
+            except Exception as e:
+                error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
