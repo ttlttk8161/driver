@@ -1,19 +1,20 @@
-import queue
+import logging
+from .thread_queue_manager import ThreadQueueManager
+from queue import Empty
 import threading
 import time
 from typing import Optional, Dict, Tuple, List, Any
 from .data_structures import SensorData, PerceptionOutput, LocalizationInfo
 from .error_manager import error_manager, ErrorCode
-import logging
 
 # Get a logger for this module
 logger = logging.getLogger(__name__)
 
 class LocalizationModule:
     def __init__(self, config: dict,
-                 input_queue_perception: queue.Queue,
-                 input_queue_sensor: Optional[queue.Queue], # For direct GNSS/IMU
-                 output_queues: Dict[str, queue.Queue]):
+                 input_queue_perception: ThreadQueueManager,
+                 input_queue_sensor: Optional[ThreadQueueManager], # For direct GNSS/IMU
+                 output_queues: Dict[str, ThreadQueueManager]):
         self.config = config
         self.input_queue_perception = input_queue_perception
         self.input_queue_sensor = input_queue_sensor # Can be None if sensors go via perception
@@ -72,29 +73,23 @@ class LocalizationModule:
         return self._current_localization
 
     def run(self):
-        logger.info(f"LocalizationModule: Thread started. Strategy: {self.active_strategy_name}")
-        selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
+        logger.info("LocalizationModule: Thread started. Strategy: %s", self.active_strategy_name)
+        self._running = True
         try:
             while self._running:
-                perception_data = None
-                sensor_data_direct = None
-                processed_something = False
                 try:
                     perception_data = self.input_queue_perception.get(block=False)
-                    processed_something = True
-                except queue.Empty:
-                    pass # No perception data this cycle
+                except Empty:
+                    perception_data = None
+                try:
+                    sensor_data = self.input_queue_sensor.get(block=False) if self.input_queue_sensor else None
+                except Empty:
+                    sensor_data = None
 
-                if self.input_queue_sensor:
-                    try:
-                        sensor_data_direct = self.input_queue_sensor.get(block=False)
-                        processed_something = True
-                    except queue.Empty:
-                        pass # No direct sensor data this cycle
-
-                if processed_something:
+                if perception_data or sensor_data:
+                    selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
                     if selected_strategy_method:
-                        localization_output = selected_strategy_method(perception_data, sensor_data_direct, self.strategy_params)
+                        localization_output = selected_strategy_method(perception_data, sensor_data, self.strategy_params)
                         for key, q in self.output_queues.items():
                             try:
                                 q.put(localization_output, timeout=0.1)
@@ -104,10 +99,10 @@ class LocalizationModule:
                         logger.warning(f"LocalizationModule: Strategy '{self.active_strategy_name}' not found in strategy_map.")
                         # Potentially sleep or handle error
                     if perception_data: self.input_queue_perception.task_done()
-                    if sensor_data_direct and self.input_queue_sensor: self.input_queue_sensor.task_done()
+                    if sensor_data and self.input_queue_sensor: self.input_queue_sensor.task_done()
 
-                if not processed_something:
-                    time.sleep(0.01) # Avoid busy waiting if no data
+                if not perception_data and not sensor_data:
+                    time.sleep(0.001) # Avoid busy waiting if no data
                 if not self._running and self.input_queue_perception.empty() and (not self.input_queue_sensor or self.input_queue_sensor.empty()):
                     break # Exit condition
 

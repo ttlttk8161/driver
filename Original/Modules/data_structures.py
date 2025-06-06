@@ -5,8 +5,6 @@ class SensorData(NamedTuple):
     timestamp: float
     lidar_data: Optional[Any]  # Raw or pre-processed LiDAR point cloud
     vision_data: Optional[Any] # Raw or pre-processed image/video frames
-    gnss_data: Optional[Any]   # Raw GNSS readings
-    imu_data: Optional[Any]    # Raw IMU readings
 
 class DetectedObject(NamedTuple):
     id: int
@@ -16,7 +14,7 @@ class DetectedObject(NamedTuple):
     velocity: Optional[Tuple[float, float, float]]
     confidence: float
     tracked_history: Optional[List[Tuple[float, float, float]]] # Historical positions
-    predicted_trajectory_short_term: Optional[List[Tuple[float, float, float]]] # For PerceptionPredictionComponent
+    # predicted_trajectory_short_term: Optional[List[Tuple[float, float, float]]] # For PerceptionPredictionComponent
 
 class LaneMarking(NamedTuple):
     points: List[Tuple[float, float]] # 2D points defining the lane
@@ -27,20 +25,6 @@ class TrafficSignInfo(NamedTuple):
     type: str # e.g., stop_sign, speed_limit_60
     position_3d: Tuple[float, float, float]
     confidence: float
-
-class WhiteLineHsvMetrics(NamedTuple): #HSV색 공간 기반의 차선 감지 결과 저장을 위한 데이터 구조
-    timestamp: float
-    total_white_pixels: int
-    left_ratio: float
-    mid_ratio: float
-    right_ratio: float
-    is_detected: bool
-
-class YellowLineHsvMetrics(NamedTuple): #HSV색 공간 기반의 차선 감지 결과 저장을 위한 데이터 구조
-    timestamp: float
-    area: float # M['m00']
-    center_x: Optional[int] # cx, ROI 좌표계 기준
-    is_detected: bool
 
 class PerceptionOutput(NamedTuple):
     timestamp: float
@@ -55,25 +39,25 @@ class PerceptionOutput(NamedTuple):
     scene_flow_map: Optional[Any]
     # Data that might be useful for a separate SLAM/Localization module if not fully handled within perception
     raw_features_for_localization: Optional[Any]
-    white_line_hsv_metrics: Optional[WhiteLineHsvMetrics]
-    yellow_line_hsv_metrics: Optional[YellowLineHsvMetrics]
-    lane_boundaries_x: Optional[List[int]] = None
+    white_mask: Optional[Any] = None  # HSV 차선 감지에서 생성된 흰색 마스크
+    yellow_mask: Optional[Any] = None  # HSV 차선 감지에서 생성된 노란색 마스크
 
-class LocalizationInfo(NamedTuple):
-    timestamp: float
-    position: Tuple[float, float, float]  # x, y, z in global frame
-    orientation_quaternion: Tuple[float, float, float, float]  # w, x, y, z
-    velocity_vector: Tuple[float, float, float] # vx, vy, vz in global frame
-    covariance_matrix: Optional[Any] # Uncertainty
+   
+# class LocalizationInfo(NamedTuple):
+#     timestamp: float
+#     position: Tuple[float, float, float]  # x, y, z in global frame
+#     orientation_quaternion: Tuple[float, float, float, float]  # w, x, y, z
+#     velocity_vector: Tuple[float, float, float] # vx, vy, vz in global frame
+#     covariance_matrix: Optional[Any] # Uncertainty
 
-class PredictedTrajectory(NamedTuple):
-    object_id: int
-    probability: float
-    path_points: List[Tuple[float, float, float]]  # Sequence of (x, y, time_offset)
+# class PredictedTrajectory(NamedTuple):
+#     object_id: int
+#     probability: float
+#     path_points: List[Tuple[float, float, float]]  # Sequence of (x, y, time_offset)
 
-class BehavioralPredictionOutput(NamedTuple):
-    timestamp: float
-    predicted_trajectories: List[PredictedTrajectory] # For various objects in the scene
+# class BehavioralPredictionOutput(NamedTuple):
+#     timestamp: float
+#     predicted_trajectories: List[PredictedTrajectory] # For various objects in the scene
 
 class PlannedPath(NamedTuple):
     timestamp: float

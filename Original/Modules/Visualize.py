@@ -18,7 +18,8 @@ class HSVLaneVisualizer:
         self.window_names = set()  # 생성된 윈도우 이름 추적
     
     def display_hsv_masks(self, white_mask: np.ndarray, yellow_mask: np.ndarray, 
-                         detection_results: Optional[Dict[str, Any]] = None) -> None:
+                         detection_results: Optional[Dict[str, Any]] = None,
+                         waypoints: Optional[list] = None) -> None:
         """
         HSV 마스크 이미지들을 화면에 표시
         Args:
@@ -40,7 +41,18 @@ class HSVLaneVisualizer:
             
             # 결합된 마스크 표시 (선택사항)
             combined_mask = cv2.bitwise_or(white_mask, yellow_mask)
-            cv2.imshow("HSV_Combined_Mask", combined_mask)
+            combined_mask_color = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
+
+            # waypoints 시각화 (좌표계 일치 여부 확인)
+            if waypoints is not None and len(waypoints) > 0:
+                for (x, y) in waypoints:
+                    # ROI 좌표계 기준으로 (x, y)가 이미지 내에 있는지 체크
+                    if 0 <= int(x) < combined_mask_color.shape[1] and 0 <= int(y) < combined_mask_color.shape[0]:
+                        cv2.circle(combined_mask_color, (int(x), int(y)), 5, (0, 0, 255), -1)
+                    else:
+                        logger.debug(f"Waypoint ({x}, {y}) is out of image bounds and will not be drawn.")
+
+            cv2.imshow("HSV_Combined_Mask", combined_mask_color)
             self.window_names.add("HSV_Combined_Mask")
             
             # 키 입력 대기 (1ms)
@@ -52,44 +64,6 @@ class HSVLaneVisualizer:
                 
         except Exception as e:
             logger.warning(f"CV2 display error in HSVLaneVisualizer: {e}")
-    
-    def display_roi_analysis(self, roi_image: np.ndarray, white_mask: np.ndarray, 
-                           analysis_results: Dict[str, Any]) -> None:
-        """
-        ROI 분석 결과를 시각화
-        Args:
-            roi_image (np.ndarray): ROI 영역 이미지
-            white_mask (np.ndarray): 흰색 차선 마스크
-            analysis_results (dict): 분석 결과 (left_ratio, mid_ratio, right_ratio 등)
-        """
-        if not self.debug_enabled or not hasattr(cv2, 'imshow'):
-            return
-        
-        try:
-            # ROI 영역을 3구간으로 나누어 시각화
-            roi_height, roi_width = white_mask.shape
-            roi_visual = cv2.cvtColor(roi_image, cv2.COLOR_BGR2RGB) if len(roi_image.shape) == 3 else roi_image.copy()
-            
-            # 구간 나누는 선 그리기
-            third_width = roi_width // 3
-            cv2.line(roi_visual, (third_width, 0), (third_width, roi_height), (0, 255, 0), 2)
-            cv2.line(roi_visual, (2 * third_width, 0), (2 * third_width, roi_height), (0, 255, 0), 2)
-            
-            # 비율 정보 텍스트 추가
-            left_ratio = analysis_results.get('left_ratio', 0)
-            mid_ratio = analysis_results.get('mid_ratio', 0)
-            right_ratio = analysis_results.get('right_ratio', 0)
-            
-            cv2.putText(roi_visual, f"L:{left_ratio:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(roi_visual, f"M:{mid_ratio:.3f}", (third_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(roi_visual, f"R:{right_ratio:.3f}", (2 * third_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
-            cv2.imshow("HSV_ROI_Analysis", roi_visual)
-            self.window_names.add("HSV_ROI_Analysis")
-            cv2.waitKey(1)
-            
-        except Exception as e:
-            logger.warning(f"CV2 ROI analysis display error: {e}")
     
     def display_yellow_detection(self, yellow_mask: np.ndarray, yellow_metrics: Dict[str, Any]) -> None:
         """
@@ -109,11 +83,11 @@ class HSVLaneVisualizer:
             area = yellow_metrics.get('area', 0)
             is_detected = yellow_metrics.get('is_detected', False)
             
-            if center_x is not None and is_detected:
-                # 중심점에 원 그리기
-                mask_height = yellow_mask.shape[0]
-                cv2.circle(yellow_visual, (int(center_x), mask_height // 2), 5, (0, 255, 0), -1)
-                cv2.putText(yellow_visual, f"Center: {center_x}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # if center_x is not None and is_detected:
+            #     # 중심점에 원 그리기
+            #     mask_height = yellow_mask.shape[0]
+            #     cv2.circle(yellow_visual, (int(center_x), mask_height // 2), 5, (0, 255, 0), -1)
+            #     cv2.putText(yellow_visual, f"Center: {center_x}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             cv2.putText(yellow_visual, f"Area: {area:.0f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(yellow_visual, f"Detected: {is_detected}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if is_detected else (0, 0, 255), 2)
@@ -133,10 +107,9 @@ class HSVLaneVisualizer:
         yellow_area = results.get('yellow_area', 0)
         yellow_center_x = results.get('yellow_center_x')
         left_ratio = results.get('left_ratio', 0)
-        mid_ratio = results.get('mid_ratio', 0)
         right_ratio = results.get('right_ratio', 0)
         
-        logger.debug(f"HSV Detection - White: detected={white_detected}, pixels={total_white}, ratios=L:{left_ratio:.3f} M:{mid_ratio:.3f} R:{right_ratio:.3f}")
+        logger.debug(f"HSV Detection - White: detected={white_detected}, pixels={total_white}, ratios=L:{left_ratio:.3f}, R:{right_ratio:.3f}")
         logger.debug(f"HSV Detection - Yellow: detected={yellow_detected}, area={yellow_area}, center_x={yellow_center_x}")
     
     def close_all_windows(self) -> None:
@@ -174,7 +147,8 @@ class PerceptionVisualizer:
     def visualize_hsv_lane_detection(self, white_mask: np.ndarray, yellow_mask: np.ndarray,
                                    roi_image: Optional[np.ndarray] = None,
                                    white_metrics: Optional[Dict[str, Any]] = None,
-                                   yellow_metrics: Optional[Dict[str, Any]] = None) -> None:
+                                   yellow_metrics: Optional[Dict[str, Any]] = None,
+                                   waypoints: Optional[list] = None) -> None:  # waypoints 인자 추가
         """
         HSV 차선 감지 전체 결과를 시각화
         Args:
@@ -183,6 +157,7 @@ class PerceptionVisualizer:
             roi_image (np.ndarray, optional): ROI 원본 이미지
             white_metrics (dict, optional): 흰색 차선 메트릭
             yellow_metrics (dict, optional): 노란색 차선 메트릭
+            waypoints (list, optional): 웨이포인트 리스트
         """
         if not self.debug_enabled:
             return
@@ -194,7 +169,6 @@ class PerceptionVisualizer:
                 'white_detected': white_metrics.get('is_detected', False),
                 'total_white': white_metrics.get('total_white_pixels', 0),
                 'left_ratio': white_metrics.get('left_ratio', 0),
-                'mid_ratio': white_metrics.get('mid_ratio', 0),
                 'right_ratio': white_metrics.get('right_ratio', 0)
             })
         
@@ -205,16 +179,16 @@ class PerceptionVisualizer:
                 'yellow_center_x': yellow_metrics.get('center_x')
             })
         
-        self.hsv_visualizer.display_hsv_masks(white_mask, yellow_mask, detection_results)
+        # waypoints 인자 전달
+        self.hsv_visualizer.display_hsv_masks(white_mask, yellow_mask, detection_results, waypoints)
         
-        # ROI 분석 시각화
-        if roi_image is not None and white_metrics:
-            analysis_results = {
-                'left_ratio': white_metrics.get('left_ratio', 0),
-                'mid_ratio': white_metrics.get('mid_ratio', 0),
-                'right_ratio': white_metrics.get('right_ratio', 0)
-            }
-            self.hsv_visualizer.display_roi_analysis(roi_image, white_mask, analysis_results)
+        # # ROI 분석 시각화
+        # if roi_image is not None and white_metrics:
+        #     analysis_results = {
+        #         'left_ratio': white_metrics.get('left_ratio', 0),
+        #         'right_ratio': white_metrics.get('right_ratio', 0)
+        #     }
+        #     self.hsv_visualizer.display_roi_analysis(roi_image, white_mask, analysis_results)
         
         # 노란색 차선 상세 시각화
         if yellow_metrics:

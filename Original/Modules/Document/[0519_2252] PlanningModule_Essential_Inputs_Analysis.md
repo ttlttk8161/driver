@@ -25,7 +25,7 @@
 *   **`PlanningModule`에서의 중요성**:
     *   **"내 주변에는 무엇이 있는가?"**: 안전하고 규칙을 준수하는 주행을 위해 필수적입니다.
     *   차선을 유지하고, 장애물을 회피하며, 교통 신호 및 표지판에 따라 적절한 행동(정지, 진행, 속도 조절 등)을 계획하려면 주변 환경에 대한 정확한 인지가 선행되어야 합니다.
-    *   예를 들어, `/home/xytron/xycar_ws/src/kookmin/driver/Original/Modules/planning_module.py`의 `ActionPlannerComponent`는 `PerceptionOutput`에 포함된 HSV 차선 감지 결과(`white_line_hsv_metrics`, `yellow_line_hsv_metrics`)를 직접 사용하여 조향각을 결정합니다.
+    *   예를 들어, `/home/xytron/xycar_ws/src/kookmin/driver/Original/Modules/planning_module.py`의 `ActionPlannerComponent`는 `PerceptionOutput`에 포함된 HSV 차선 감지 결과를 직접 사용하여 조향각을 결정합니다.
 
 ### 2.3. `PredictionModule` (예측 모듈)
 

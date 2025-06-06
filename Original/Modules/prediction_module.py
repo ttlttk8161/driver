@@ -1,19 +1,20 @@
-import queue
+import logging
+from .thread_queue_manager import ThreadQueueManager
+from queue import Empty
 import threading
 import time
 from typing import Dict, List
 from .data_structures import (
     PerceptionOutput, LocalizationInfo, BehavioralPredictionOutput, PredictedTrajectory, DetectedObject
 )
-import logging
 
 logger = logging.getLogger(__name__)
 
 class PredictionModule:
     def __init__(self, config: dict,
-                 input_queue_perception: queue.Queue,
-                 input_queue_localization: queue.Queue,
-                 output_queue: queue.Queue):
+                 input_queue_perception: ThreadQueueManager,
+                 input_queue_localization: ThreadQueueManager,
+                 output_queue: ThreadQueueManager):
         self.config = config
         self.input_queue_perception = input_queue_perception
         self.input_queue_localization = input_queue_localization
@@ -30,6 +31,7 @@ class PredictionModule:
         self._latest_localization: LocalizationInfo = None
         self._running = False
         self._thread = None
+        self.perception_buffer = {}  # 버퍼 선언
         logger.info("PredictionModule (Behavioral): Initialized.")
 
     def _execute_simple_extrapolation(self, perception_data: PerceptionOutput, 
@@ -69,49 +71,46 @@ class PredictionModule:
         )
 
     def run(self):
-        logger.info(f"PredictionModule: Thread started. Strategy: {self.active_strategy_name}")
-        perception_buffer = {} # Buffer perception data by timestamp
+        logger.info("PredictionModule: Thread started. Strategy: %s", self.active_strategy_name)
+        self._running = True
         selected_strategy_method = self.strategy_map.get(self.active_strategy_name)
-
-        while self._running:
-            # Update latest localization
-            try:
-                self._latest_localization = self.input_queue_localization.get(block=False)
-                self.input_queue_localization.task_done()
-            except queue.Empty:
-                pass # No new localization, use the latest one
-
-            # Process perception data
-            try:
-                perception_data: PerceptionOutput = self.input_queue_perception.get(timeout=0.1) # Timeout to allow checking _running
-                perception_buffer[perception_data.timestamp] = perception_data # Store in buffer
-
-                # Try to match with localization (simple timestamp matching or nearest)
-                if self._latest_localization:
-                    # Find closest perception data to latest localization, or use latest perception data
-                    if selected_strategy_method:
-                        prediction_result = selected_strategy_method(perception_data, self._latest_localization, self.strategy_params)
-                        try:
-                            self.output_queue.put(prediction_result, timeout=0.1)
-                        except queue.Full:
-                            logger.warning("PredictionModule: Output queue full.")
-                    else:
-                        logger.warning(f"PredictionModule: Strategy '{self.active_strategy_name}' not found.")
+        try:
+            while self._running:
+                latest_perception = None
+                latest_localization = None
+                # perception 큐에서 최신 데이터만 남기고 모두 소비
+                while True:
+                    try:
+                        latest_perception = self.input_queue_perception.get(block=False)
+                        self.input_queue_perception.task_done()
+                    except Empty:
+                        break
+                # localization 큐에서 최신 데이터만 남기고 모두 소비
+                while True:
+                    try:
+                        latest_localization = self.input_queue_localization.get(block=False)
+                        self.input_queue_localization.task_done()
+                    except Empty:
+                        break
+                # 둘 다 최신 데이터가 있을 때만 예측 수행
+                if latest_perception is not None and latest_localization is not None:
+                    try:
+                        if selected_strategy_method:
+                            prediction_result = selected_strategy_method(latest_perception, latest_localization, self.strategy_params)
+                            try:
+                                self.output_queue.put(prediction_result, timeout=0.1)
+                            except Exception:
+                                logger.warning("PredictionModule: Output queue full.")
+                        else:
+                            logger.warning(f"PredictionModule: Strategy '{self.active_strategy_name}' not found.")
+                    except Exception as e:
+                        logger.error(f"PredictionModule: Error during prediction: {e}", exc_info=True)
                 else:
-                    # Wait for localization data if not available yet
-                    logger.info("PredictionModule: Waiting for initial localization data.")
-
-                self.input_queue_perception.task_done()
-
-            except queue.Empty:
-                if not self._running:
-                    break
-                time.sleep(0.01) # Avoid busy wait
-            except Exception as e:
-                logger.error(f"PredictionModule: Error processing data: {e}", exc_info=True)
-
+                    # 데이터가 부족하면 짧게 sleep
+                    time.sleep(0.001)
+        except Exception as e:
+            logger.error(f"PredictionModule: Error processing data: {e}", exc_info=True)
         logger.info("PredictionModule: Thread stopped.")
-
 
     def start(self):
         if not self._running:

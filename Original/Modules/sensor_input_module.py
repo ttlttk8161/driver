@@ -80,9 +80,9 @@ class SensorInputManager:
                 sensor_bundle = SensorData(
                     timestamp=img_ts, # Use image timestamp
                     lidar_data=current_lidar,
-                    vision_data=current_image,
-                    gnss_data=None, # 실제 GNSS 데이터가 있다면 추가
-                    imu_data=None   # 실제 IMU 데이터가 있다면 추가
+                    vision_data=current_image
+                    # gnss_data=None, # 구현된 로직 없으니, 사용하지 않음
+                    # imu_data=None   # 구현된 로직 없으니, 사용하지 않음
                 )
                 try:
                     self.output_queue.put(sensor_bundle, timeout=0.5)

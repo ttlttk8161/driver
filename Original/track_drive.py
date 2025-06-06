@@ -94,21 +94,15 @@ def start():
         config["ros_bridge"] = bridge
         config["ros_motor_publisher"] = motor
         config["ros_motor_msg_template"] = XycarMotor()
-        try:
-            autonomous_system = MainSystem(config=config)
-        except Exception as e:
-            error_manager.handle(ErrorCode.MAIN_SYSTEM_INIT_FAIL, str(e))
-            raise
-        rospy.on_shutdown(autonomous_system.stop)
-        try:
-            autonomous_system.start()
-        except Exception as e:
-            error_manager.handle(ErrorCode.MODULE_START_FAIL, str(e))
-            raise
+        
         print("===================================================")
         print(" S T A R T    D R I V I N G (Modular System)...")
         print(" LiDAR Visualization runs in Visualize.py (if launched).")
         print("===================================================")
+
+        main_system = MainSystem(config)
+        main_system.start()  # 반드시 호출해야 각 모듈 스레드가 동작함
+
         while not rospy.is_shutdown():
             try:
                 rospy.sleep(0.1)
@@ -123,6 +117,7 @@ def start():
             sys.stdout = original_stdout
         print(f"\nProgram finished.")
         if 'logger' in locals():
+            rospy.is_shutdown()
             logging.info("Program finished. Logging is being shut down.")
             logging.shutdown()
 

@@ -11,6 +11,7 @@ class ErrorCode:
     MODULE_START_FAIL = 4
     MODULE_RUNTIME_EXCEPTION = 5
     STDOUT_REDIRECT_FAIL = 6
+    PERCEPTION_ALGO_NOT_SELECTED = 100  # perception 작업용 알고리즘 미선택
     # 필요시 추가
 
 class ErrorManager:
@@ -34,6 +35,8 @@ class ErrorManager:
             pass
         elif code == ErrorCode.STDOUT_REDIRECT_FAIL:
             pass
+        elif code == ErrorCode.PERCEPTION_ALGO_NOT_SELECTED:
+            pass
         # ...
 
     def _get_message(self, code, detail):
@@ -45,6 +48,7 @@ class ErrorManager:
             ErrorCode.MODULE_START_FAIL: "모듈 시작 실패.",
             ErrorCode.MODULE_RUNTIME_EXCEPTION: "모듈 실행 중 예외 발생.",
             ErrorCode.STDOUT_REDIRECT_FAIL: "stdout 리디렉션 실패.",
+            ErrorCode.PERCEPTION_ALGO_NOT_SELECTED: "perception 작업을 위한 알고리즘이 선택되지 않았음.",
         }.get(code, "정의되지 않은 에러코드.")
         if detail:
             return f"[Error {code}] {base} 상세: {detail}"
