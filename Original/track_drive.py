@@ -1,125 +1,130 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*- 2
+# -*- coding: utf-8 -*-
 
-import numpy as np
-import cv2, rospy, time, os, math
-from sensor_msgs.msg import Image
-from xycar_msgs.msg import XycarMotor
-from cv_bridge import CvBridge
-from sensor_msgs.msg import LaserScan
-# import matplotlib.pyplot as plt # Visualize.py로 이동
+import rospy
+import time
+import threading
+from topic_manager import TopicManager
+from visualizer import Visualizer
+from perception import Perception
+from control import Control
+from thread_manager import ThreadManager
 
-# Modules 시스템 import
-import sys
-import os # os 모듈 추가
-import logging # 로깅 모듈 사용
-from Modules.error_manager import error_manager, ErrorCode
-sys.path.append(os.path.dirname(os.path.abspath(__file__))) # track_drive.py가 있는 디렉토리를 sys.path에 추가하여 바로 아래 Modules 패키지를 찾을 수 있도록 함
-from Modules.main_system import MainSystem, load_dummy_config
+Fix_Speed = 10
 
-# Custom stream to redirect print output to logger
-class StreamToLogger(object):
-   """
-   Fake file-like stream object that redirects writes to a logger instance.
-   """
-   def __init__(self, logger, level):
-      self.logger = logger
-      self.level = level
-      self.buffer = '' # Use a buffer to handle partial writes
+sensor_lock = threading.Lock()
+perception_lock = threading.Lock()
+control_lock = threading.Lock()
 
-   def write(self, message):
-      self.buffer += message
-      while '\n' in self.buffer:
-          line, self.buffer = self.buffer.split('\n', 1)
-          self.logger.log(self.level, line.rstrip()) # rstrip() to remove trailing newline if any
+sensor_event = threading.Event()
+perception_event = threading.Event()
+control_event = threading.Event()
 
-   def flush(self): # flush() is important for some print scenarios
-      if self.buffer:
-          self.logger.log(self.level, self.buffer.rstrip())
-          self.buffer = ''
+shared_data = {
+    'image': None,
+    'ranges': None,
+    'lane_data': None,
+    'obstacle_data': None,
+    'vis_img': None,
+    'angle': 0.0,
+    'speed': Fix_Speed
+}
 
-motor = None  # 모터노드
-motor_msg = XycarMotor()  # 모터 토픽 메시지
-Fix_Speed = 10  # 모터 속도 고정 상수값 
-new_angle = 0  # 모터 조향각 초기값
-new_speed = Fix_Speed  # 모터 속도 초기값
-bridge = CvBridge()  # OpenCV 함수를 사용하기 위한 브릿지 
+def sensor_thread(topic_mgr):
+    while not rospy.is_shutdown():
+        image = topic_mgr.get_image()
+        ranges = topic_mgr.get_ranges()
+        with sensor_lock:
+            shared_data['image'] = image
+            shared_data['ranges'] = ranges
+        sensor_event.set()
+        time.sleep(0.01)
+
+def perception_thread(perception):
+    while not rospy.is_shutdown():
+        sensor_event.wait()
+        with sensor_lock:
+            image = shared_data['image']
+            ranges = shared_data['ranges']
+        lane_data, vis_img = perception.process_image(image)
+        obstacle_data = perception.process_lidar(ranges)
+        with perception_lock:
+            shared_data['lane_data'] = lane_data
+            shared_data['obstacle_data'] = obstacle_data
+            shared_data['vis_img'] = vis_img
+        perception_event.set()
+        sensor_event.clear()
+        time.sleep(0.01)
+
+def control_thread(control):
+    while not rospy.is_shutdown():
+        perception_event.wait()
+        with perception_lock:
+            lane_data = shared_data['lane_data']
+            obstacle_data = shared_data['obstacle_data']
+        angle, speed = control.calculate_control(lane_data, obstacle_data)
+        with control_lock:
+            shared_data['angle'] = angle
+            shared_data['speed'] = speed
+        control_event.set()
+        perception_event.clear()
+        time.sleep(0.01)
+
+def actuator_thread(topic_mgr, visualizer):
+    while not rospy.is_shutdown():
+        control_event.wait()
+        with sensor_lock:
+            image = shared_data['image']
+            ranges = shared_data['ranges']
+        with control_lock:
+            angle = shared_data['angle']
+            speed = shared_data['speed']
+        with perception_lock:
+            vis_img = shared_data.get('vis_img', None)
+        if vis_img is not None:
+            visualizer.show_camera(vis_img)
+        # perception의 show_lane_info로 별도 창에 차선 정보 시각화
+        if image is not None and hasattr(image, 'size') and image.size > 0:
+            from perception import Perception
+            perception = shared_data.get('perception_instance', None)
+            if perception is not None:
+                perception.show_lane_info(image)
+        topic_mgr.drive(angle=angle, speed=speed)
+        control_event.clear()
+        time.sleep(0.01)
 
 def start():
-    global motor, bridge
-    original_stdout = sys.stdout
-    try:
-        print("Start program --------------")
-        rospy.init_node('Track_Driver')
-        # 로깅 설정
-        log_file_path = "/home/xytron/xycar_ws/src/kookmin/driver/Original/track_drive.log"
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        fh = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-        sh = logging.StreamHandler(original_stdout)
-        sh.setFormatter(formatter)
-        logger.addHandler(sh)
-        # ROS 토픽 준비 대기
-        motor = rospy.Publisher('/xycar_motor', XycarMotor, queue_size=1)
-        try:
-            rospy.wait_for_message("/usb_cam/image_raw/", Image)
-            print("Track_Driver: Camera Topic Ready -------------- (MainSystem will subscribe)")
-        except Exception as e:
-            error_manager.handle(ErrorCode.ROS_TOPIC_TIMEOUT, f"카메라 토픽: {e}")
-            raise
-        try:
-            rospy.wait_for_message("/scan", LaserScan)
-            print("Track_Driver: Lidar Topic Ready ---------- (MainSystem or Visualize.py will subscribe)")
-        except Exception as e:
-            error_manager.handle(ErrorCode.ROS_TOPIC_TIMEOUT, f"라이다 토픽: {e}")
-            raise
-        # stdout 리디렉션
-        try:
-            sys.stdout = StreamToLogger(logger, logging.INFO)
-            logging.info("Sys.stdout redirected to logger. Subsequent print() statements will be logged to file and console.")
-        except Exception as e:
-            error_manager.handle(ErrorCode.STDOUT_REDIRECT_FAIL, str(e))
-        print("This is a test print after redirection. It should appear in the log file and on the console.")
-        # MainSystem 설정 및 시작
-        config = load_dummy_config()
-        if "perception_config" not in config:
-            config["perception_config"] = {}
-        if "detection" not in config["perception_config"]:
-            config["perception_config"]["detection"] = {}
-        config["perception_config"]["detection"]["active_perception_algorithm"] = "hsv_lane_detection"  # 인지 알고리즘 활성화
-        logging.info(f"Active perception algorithm set to: {config['perception_config']['detection']['active_perception_algorithm']}")
-        config["ros_bridge"] = bridge
-        config["ros_motor_publisher"] = motor
-        config["ros_motor_msg_template"] = XycarMotor()
-        
-        print("===================================================")
-        print(" S T A R T    D R I V I N G (Modular System)...")
-        print(" LiDAR Visualization runs in Visualize.py (if launched).")
-        print("===================================================")
+    topic_mgr = TopicManager()
+    visualizer = Visualizer()
+    perception = Perception()
+    control = Control()
+    # perception 인스턴스를 shared_data에 저장하여 actuator_thread에서 사용
+    shared_data['perception_instance'] = perception
+    
+    print("Start program")
+    topic_mgr.init_node()
+    topic_mgr.wait_for_topics()
+    visualizer.init_lidar_plot()
+    control.set_target_speed(Fix_Speed)
+    control.set_speed_limits(5, 20)
+    control.set_pid_gains(1.0, 0.0, 0.1)
+    print("======================================")
+    print(" S T A R T    D R I V I N G ...")
+    print("======================================")
 
-        main_system = MainSystem(config)
-        main_system.start()  # 반드시 호출해야 각 모듈 스레드가 동작함
+    tm = ThreadManager()
+    tm.add_thread(sensor_thread, args=(topic_mgr,))
+    tm.add_thread(perception_thread, args=(perception,))
+    tm.add_thread(control_thread, args=(control,))
+    tm.add_thread(actuator_thread, args=(topic_mgr, visualizer))
+    tm.start_all()
 
-        while not rospy.is_shutdown():
-            try:
-                rospy.sleep(0.1)
-            except Exception as e:
-                error_manager.handle(ErrorCode.MODULE_RUNTIME_EXCEPTION, str(e))
-                break
-    except Exception as e:
-        error_manager.handle(ErrorCode.UNKNOWN, str(e))
-        print(f"An unhandled exception occurred in start(): {e}")
-    finally:
-        if 'original_stdout' in locals() and sys.stdout != original_stdout:
-            sys.stdout = original_stdout
-        print(f"\nProgram finished.")
-        if 'logger' in locals():
-            rospy.is_shutdown()
-            logging.info("Program finished. Logging is being shut down.")
-            logging.shutdown()
+    # 메인스레드에서 시각화 루프 실행
+    while not rospy.is_shutdown():
+        with sensor_lock:
+            ranges = shared_data['ranges']
+        visualizer.update_lidar(ranges)
+        time.sleep(0.05)
 
 if __name__ == '__main__':
     start()
