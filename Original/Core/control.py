@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 
 import math
+import sys
+sys.path.append('/home/xytron/xycar_ws/src/kookmin/driver/Original/cloudsonnet/test')
+from path_planner import PathPlanner
 
 class Control:
     def __init__(self):
@@ -19,29 +22,44 @@ class Control:
         self.lateral_error_sum = 0.0
         self.prev_lateral_error = 0.0
         
+        self.path_planner = PathPlanner()
+        
     def calculate_control(self, lane_data, obstacle_data):
         """
         Perception 데이터를 바탕으로 제어 명령 계산
         Args:
-            lane_data: 차선 정보
+            lane_data: 차선 정보 (left_lane_points, right_lane_points)
             obstacle_data: 장애물 정보
         Returns:
             tuple: (조향각, 속도)
         """
-        # 1. 장애물+차선 기반 속도 제어
-        self.target_speed = self._calculate_speed_control(obstacle_data, lane_data)
-        
-        # 2. 차선 기반 조향 제어
-        self.target_angle = self._calculate_steering_control(lane_data)
-        
-        # 3. 안전 검사
-        self._safety_check(obstacle_data)
-        
-        # 4. 제한값 적용
-        self.target_speed = self._limit_speed(self.target_speed)
-        self.target_angle = self._limit_angle(self.target_angle)
-        
-        return self.target_angle, self.target_speed
+        # PathPlanner 활용 예시
+        left_points = lane_data.get('left_lane_points', []) if lane_data else []
+        right_points = lane_data.get('right_lane_points', []) if lane_data else []
+        # 차선 포인트가 충분할 때만 경로 생성
+        if len(left_points) >= 4 and len(right_points) >= 4:
+            import numpy as np
+            left_np = np.array(left_points)
+            right_np = np.array(right_points)
+            self.path_planner.initialize_center_line(left_np, right_np)
+            # 차량 상태 예시 (실제 차량 위치/방향 정보 필요)
+            vehicle_state = {'x': 0.0, 'y': 0.0, 'heading': 0.0}
+            path_candidates = self.path_planner.generate_path_candidates(vehicle_state)
+            optimal_path = self.path_planner.select_optimal_path(path_candidates, obstacle_data.get('obstacles', []))
+            # 최적 경로의 steering, speed 산출 (예시)
+            if optimal_path is not None:
+                # 경로 첫 구간의 방향으로 조향각 계산 (간단 예시)
+                path = optimal_path['path']
+                if len(path) >= 2:
+                    dx = path[1][0] - path[0][0]
+                    dy = path[1][1] - path[0][1]
+                    angle = np.degrees(np.arctan2(dy, dx))
+                    speed = self.target_speed
+                    return angle, speed
+        # 기존 방식 fallback
+        angle = self._calculate_steering_control(lane_data)
+        speed = self._calculate_speed_control(obstacle_data, lane_data)
+        return angle, speed
     
     def _calculate_speed_control(self, obstacle_data, lane_data=None):
         """
@@ -79,6 +97,23 @@ class Control:
         Returns:
             float: 목표 조향각
         """
+        # lane_data가 dict면 중심 웨이포인트 생성
+        if isinstance(lane_data, dict):
+            left = lane_data.get('left_lane_points', [])
+            right = lane_data.get('right_lane_points', [])
+            waypoints = []
+            min_len = min(len(left), len(right))
+            for i in range(0, min_len, 2):
+                # 선분의 중간점으로 중심 계산
+                lx = (left[i][0] + left[i+1][0]) / 2 if i+1 < len(left) else left[i][0]
+                ly = (left[i][1] + left[i+1][1]) / 2 if i+1 < len(left) else left[i][1]
+                rx = (right[i][0] + right[i+1][0]) / 2 if i+1 < len(right) else right[i][0]
+                ry = (right[i][1] + right[i+1][1]) / 2 if i+1 < len(right) else right[i][1]
+                cx = (lx + rx) / 2
+                cy = (ly + ry) / 2
+                waypoints.append((cx, cy))
+            lane_data = waypoints
+
         # 차선 검출이 3개 미만일 때도 마지막 정상값을 사용하여 계속 시도
         if lane_data is None or not isinstance(lane_data, list) or len(lane_data) < 3:
             # 마지막 정상값이 perception에서 제공된다고 가정

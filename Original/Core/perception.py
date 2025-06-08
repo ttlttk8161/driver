@@ -4,6 +4,10 @@
 import cv2
 import numpy as np
 from scipy.interpolate import CubicSpline
+import sys
+sys.path.append('/home/xytron/xycar_ws/src/kookmin/driver/Original/cloudsonnet/test')
+from lane_detector import LaneDetector
+from obstacle_detector import ObstacleDetector
 
 class Perception:
     def __init__(self):
@@ -16,19 +20,19 @@ class Perception:
         # 1. 클래스 변수 추가
         self._last_yellow_left_line = None
         self._last_yellow_right_line = None
+        self.lane_detector = LaneDetector()
+        self.obstacle_detector = ObstacleDetector()
 
     def process_image(self, image):
         if image is None or image.size == 0:
             return None, image
-        self.processed_image = self._preprocess_image(image)
-        self._extract_lane_lines(self.processed_image, image)
-        waypoints = self._extract_lane_waypoints(image)
-        # 3개 이상이면 정상 저장
-        if len(waypoints) >= 3:
-            self._last_valid_waypoints = waypoints
-        self._last_waypoints = waypoints
-        vis_img = self._draw_waypoints_and_spline(image, waypoints)
-        return waypoints, vis_img
+        # LaneDetector 모듈 사용
+        left_lane_points, right_lane_points, vis_img = self.lane_detector.detect_lanes(image)
+        lane_data = {
+            'left_lane_points': left_lane_points,
+            'right_lane_points': right_lane_points
+        }
+        return lane_data, vis_img
 
     def _preprocess_image(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -283,3 +287,36 @@ class Perception:
             sq = (s, q)
         vis_img = self._draw_waypoints_and_spline(image, waypoints)
         return waypoints, vis_img, sq
+
+    def process_lidar(self, scan_msg):
+        if scan_msg is None:
+            return None
+        # scan_msg가 tuple/array라면, LaserScan 메시지처럼 변환
+        if isinstance(scan_msg, (tuple, list, np.ndarray)):
+            class FakeScan:
+                pass
+            fake = FakeScan()
+            fake.ranges = np.array(scan_msg)
+            fake.angle_min = 0.0
+            fake.angle_max = 2 * np.pi
+            fake.range_min = 0.1
+            fake.range_max = 20.0
+            scan_msg = fake
+        obstacles = self.obstacle_detector.process_lidar_scan(scan_msg)
+        # 예시: 전방 장애물까지의 최소 거리 추출
+        front_distance = float('inf')
+        for obs in obstacles:
+            # 차량 전방(0도 부근) 기준, x축이 전방이라고 가정
+            if hasattr(obs, 'position') and obs.position[0] > 0 and abs(obs.position[1]) < 1.0:
+                dist = np.linalg.norm(obs.position)
+                if dist < front_distance:
+                    front_distance = dist
+        return {'obstacles': obstacles, 'front_distance': front_distance}
+
+    def show_lane_info(self, image):
+        # 차선 포인트 및 웨이포인트를 시각화하여 별도 창에 표시
+        lane_data, vis_img = self.process_image(image)
+        if vis_img is not None:
+            import cv2
+            cv2.imshow("Lane Info", vis_img)
+            cv2.waitKey(1)
