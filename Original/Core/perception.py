@@ -196,145 +196,90 @@ class Perception:
         # waypoint 시각화 (노랑)
         for (x, y) in waypoints:
             cv2.circle(vis_img, (x, y), 5, (0,255,255), -1)
-        # Cubic Spline 곡선 시각화 (빨강)
-        if len(waypoints) >= 4:
-            # y값 기준 오름차순 정렬
-            pts = np.array(sorted(waypoints, key=lambda p: p[1]))
-            cs = CubicSpline(pts[:,1], pts[:,0])
-            y_curve = np.linspace(pts[:,1].min(), pts[:,1].max(), 100)
-            x_curve = cs(y_curve)
-            for i in range(len(y_curve)-1):
-                pt1 = (int(x_curve[i]), int(y_curve[i]))
-                pt2 = (int(x_curve[i+1]), int(y_curve[i+1]))
-                cv2.line(vis_img, pt1, pt2, (0,0,255), 2)
+        # 기존 CubicSpline 기반 중심선 시각화 코드 제거
         return vis_img
 
-    def _draw_lane_lines(self, orig_image):
+    def generate_centerline_spline(self, waypoints):
         """
-        검출된 차선(흰색, 노란색)을 원본 이미지 위에 시각화하여 반환
+        주어진 웨이포인트로부터 중심선(스플라인) 생성
         Returns:
-            vis_img: 차선이 그려진 이미지(BGR)
+            cs_x: CubicSpline (y -> x)
+            cs_y: CubicSpline (s -> y)
+            s_samples: 아크길이 누적값 배열
         """
-        vis_img = orig_image.copy()
-        # 왼쪽 차선(노란/흰) 그리기
-        for x1, y1, x2, y2, color in self._last_left_lines:
-            if color == 'yellow':
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 0, 0), 4)  # 검은색
-            else:
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 0, 0), 4)  # 검은색
-        # 오른쪽 차선(노란/흰) 그리기
-        for x1, y1, x2, y2, color in self._last_right_lines:
-            if color == 'yellow':
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 0, 0), 4)
-            else:
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 0, 0), 4) # 검은색
-        return vis_img
+        if len(waypoints) < 4:
+            return None, None, None
+        pts = np.array(sorted(waypoints, key=lambda p: p[1]))
+        y = pts[:,1]
+        x = pts[:,0]
+        # y 기준 CubicSpline (y->x)
+        cs_x = CubicSpline(y, x)
+        # 아크길이 s 계산
+        s_samples = np.zeros_like(y, dtype=np.float32)
+        for i in range(1, len(y)):
+            dx = x[i] - x[i-1]
+            dy = y[i] - y[i-1]
+            ds = np.hypot(dx, dy)
+            s_samples[i] = s_samples[i-1] + ds
+        # s 기준 y CubicSpline (s->y)
+        cs_y = CubicSpline(s_samples, y)
+        return cs_x, cs_y, s_samples
 
-    def show_lane_info(self, orig_image):
+    def project_point_to_centerline(self, cs_x, cs_y, s_samples, px, py):
         """
-        원본 이미지 위에 검출된 waypoint(노랑)와 Cubic Spline(빨강), 그리고 추종된 차선(노랑/흰)을 모두 시각화 (통합)
-        Args:
-            orig_image: 원본 BGR 이미지
+        차량 위치(px, py)를 중심선 스플라인에 투영하여 s(아크길이), q(횡방향 오프셋) 반환
+        Returns:
+            s_proj: 투영점의 아크길이
+            q: 횡방향 오프셋(좌우 거리)
         """
-        vis_img = orig_image.copy()
-        # 1. 추종된 차선(노랑/흰) 시각화
-        for x1, y1, x2, y2, color in self._last_left_lines:
-            if color == 'yellow':
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 255, 255), 4)
-            else:
-                cv2.line(vis_img, (x1, y1), (x2, y2), (255, 255, 255), 4)
-        for x1, y1, x2, y2, color in self._last_right_lines:
-            if color == 'yellow':
-                cv2.line(vis_img, (x1, y1), (x2, y2), (0, 255, 255), 4)
-            else:
-                cv2.line(vis_img, (x1, y1), (x2, y2), (255, 255, 255), 4)
-        # 2. waypoint(노랑) 시각화
-        waypoints = self._last_waypoints if self._last_waypoints else self._extract_lane_waypoints(orig_image)
-        for (x, y) in waypoints:
-            cv2.circle(vis_img, (x, y), 5, (0,255,255), -1)
-        # 3. Cubic Spline(빨강) 시각화
-        if len(waypoints) >= 4:
-            pts = np.array(sorted(waypoints, key=lambda p: p[1]))
-            cs = CubicSpline(pts[:,1], pts[:,0])
-            y_curve = np.linspace(pts[:,1].min(), pts[:,1].max(), 100)
-            x_curve = cs(y_curve)
-            for i in range(len(y_curve)-1):
-                pt1 = (int(x_curve[i]), int(y_curve[i]))
-                pt2 = (int(x_curve[i+1]), int(y_curve[i+1]))
-                cv2.line(vis_img, pt1, pt2, (0,0,255), 2)
-        cv2.imshow('lane_info_all', vis_img)
-        cv2.waitKey(1)
-
-    def show_lane_lines(self, orig_image):
-        """
-        검출된 차선(노란/흰)만 원본 이미지 위에 시각화 (별도 창)
-        """
-        vis_img = self._draw_lane_lines(orig_image)
-        cv2.imshow('detected_lanes', vis_img)
-        cv2.waitKey(1)
-
-    def get_lane_waypoints(self):
-        """waypoint 리스트 반환"""
-        return self._last_waypoints
-
-    def get_processed_image(self):
-        return self.processed_image
-
-    def get_valid_waypoints(self):
-        """
-        3개 이상이면 현재값, 아니면 마지막 정상값 반환
-        """
-        if len(self._last_waypoints) >= 3:
-            return self._last_waypoints
+        if cs_x is None or cs_y is None or s_samples is None:
+            return None, None
+        # s 범위 샘플링
+        s_dense = np.linspace(s_samples[0], s_samples[-1], 200)
+        y_dense = cs_y(s_dense)
+        x_dense = cs_x(y_dense)
+        # 각 샘플에 대해 거리 계산
+        dists = np.hypot(x_dense - px, y_dense - py)
+        min_idx = np.argmin(dists)
+        s_proj = s_dense[min_idx]
+        x_proj = x_dense[min_idx]
+        y_proj = y_dense[min_idx]
+        # 중심선의 접선 벡터 계산
+        if min_idx < len(s_dense) - 1:
+            dx = x_dense[min_idx+1] - x_dense[min_idx]
+            dy = y_dense[min_idx+1] - y_dense[min_idx]
         else:
-            return self._last_valid_waypoints
+            dx = x_dense[min_idx] - x_dense[min_idx-1]
+            dy = y_dense[min_idx] - y_dense[min_idx-1]
+        tangent = np.array([dx, dy])
+        tangent = tangent / (np.linalg.norm(tangent) + 1e-6)
+        # 투영점에서 차량 위치로의 벡터
+        vec = np.array([px - x_proj, py - y_proj])
+        # 횡방향 오프셋(q): 접선에 수직인 방향으로의 거리
+        normal = np.array([-tangent[1], tangent[0]])
+        q = np.dot(vec, normal)
+        return s_proj, q
 
-    def process_lidar(self, ranges):
+    # 예시: 이미지 처리 후 중심선 및 s-q 좌표 계산
+    def process_image_with_centerline(self, image, vehicle_pos=None):
         """
-        라이다 데이터 처리용 인터페이스 (임시)
-        Args:
-            ranges: 라이다 센서 데이터
+        이미지 처리 + 중심선 생성 + (선택) 차량 위치의 s-q 좌표 반환
+        vehicle_pos: (x, y) 픽셀좌표 (옵션)
         Returns:
-            obstacle_data: 장애물 정보 등 (현재 None 반환)
+            waypoints, vis_img, (s, q) or None
         """
-        return None
-
-    def _calculate_steering_control(self, lane_data):
-        if lane_data is None or not isinstance(lane_data, list) or len(lane_data) < 3:
-            return 0.0
-        sorted_wps = sorted(lane_data, key=lambda p: p[1], reverse=True)
-        target_wp = sorted_wps[2]
-        # ...
-
-    def get_lane_number(self):
-        """
-        트랙 환경(흰-노-흰)에서 ego 차량의 차로 번호 추정
-        Returns:
-            int or str: 1(왼쪽 차로), 2(오른쪽 차로), 'unknown'
-        """
-        # 이미지 중심 x좌표
-        width = self.processed_image.shape[1] if self.processed_image is not None else 640
-        center_x = width // 2
-
-        # 노란 점선(중앙선) 후보들만 추출
-        yellow_lines = [line for line in self._last_left_lines + self._last_right_lines if line[-1] == 'yellow']
-        if not yellow_lines:
-            return 'unknown'
-
-        # 노란 점선의 평균 x좌표 계산 (여러 개 검출될 수 있음)
-        yellow_xs = []
-        for x1, y1, x2, y2, _ in yellow_lines:
-            yellow_xs.append(x1)
-            yellow_xs.append(x2)
-        yellow_center = int(np.mean(yellow_xs))
-
-        if center_x < yellow_center:
-            return 1  # 1차로 (왼쪽)
-        else:
-            return 2  # 2차로 (오른쪽)
-
-perception = Perception()
-# ... (이미지 처리 및 차선 인식 코드)
-
-lane_number = perception.get_lane_number()
-print(f"현재 차로 번호: {lane_number}")
+        if image is None or image.size == 0:
+            return None, image, None
+        self.processed_image = self._preprocess_image(image)
+        self._extract_lane_lines(self.processed_image, image)
+        waypoints = self._extract_lane_waypoints(image)
+        if len(waypoints) >= 3:
+            self._last_valid_waypoints = waypoints
+        self._last_waypoints = waypoints
+        cs_x, cs_y, s_samples = self.generate_centerline_spline(waypoints)
+        sq = None
+        if vehicle_pos is not None and cs_x is not None:
+            s, q = self.project_point_to_centerline(cs_x, cs_y, s_samples, vehicle_pos[0], vehicle_pos[1])
+            sq = (s, q)
+        vis_img = self._draw_waypoints_and_spline(image, waypoints)
+        return waypoints, vis_img, sq

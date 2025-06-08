@@ -1,0 +1,4 @@
+numpy
+scipy
+# shapely (optional, for advanced collision checking)
+# matplotlib (optional, for visualization)
